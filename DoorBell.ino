@@ -1,0 +1,668 @@
+//
+// This ESP32 ARDUINO program is a Zibgee end device that will interact with a mechanical door bell. It allows the door bell
+// button presses to become Zibgee binary sensors and allows playing ot the bells via relays using inputs from zigbee.
+// It uses the 12v AC power of the normal door bell.
+//
+// HARDWARE:
+//
+// On an ESP32-C6 we have a factory reset button, inputs for two door bell buttons, and outputs for two relays which drive the
+// door bell chimes. So you need a 12-14AC to 5v DC converter to drive it. The AC is controlled by the relays but everything else
+// operates at 5 volts.
+// BUILD NOTES:
+//          I built this on a Mac and had problems with the USB driver. Waveshare has a nice page describing how to put a new
+//          driver on your Mac which worked perfectly. Without it one of my boards refused to load the code via Arduino but 
+//          surprise a bunch of other boards worked just fine. Anyway if you get CRC errors downlaoding, try lower speeds and if that
+//          fails pop over to Waveshare and lookup the USB driver problem.
+//
+//          ARDUINO IDE TOOLS SETTINGS:
+//          You need to set a number of settings in the Arduino IDE/Tools menu for this to work properly.
+//              1 - Tools/USB CDC on boot - enabled (allows serial IO for debugging).
+//              2 - Tools/Core debug level (set as desired useful for debugging zibbee attach etc.) start verbose.
+//              3 - Tools/Erase all flash before upload - this means each download its a brand new Zibgee end point.
+//                  Id erase for first few downloads and always delete/reattach but after its working don't erease the
+//                  flash each time. Once its working you can erase the flash and start scratch with a long press on the
+//                  reset button anyway.
+//              3 - Tools/partition scheme: 4MB with spiffs - seems to be what the Zibgee library wants.
+//              4 - Tools/zibgee mode ED (end device) - you can also use the end mode with debug enabled for more tracing.
+//
+// SOFTWARE:
+//
+#include <esp_task_wdt.h>
+#include <nvs_flash.h>
+#include <freertos/FreeRTOS.h>
+#ifndef ZIGBEE_MODE_ED
+#error "Zigbee end device mode is not selected in Tools->Zigbee mode"
+#endif
+#include "Zigbee.h"
+#include "esp_log.h"
+
+//
+// Hardware Pin configurations.
+//
+const int isr_resetButtonPin = 18;                      // Causes a factory reset by erasing all NVS
+const int isr_door1ButtonPin = 19;                      // detects door bell button 1 when grounded
+const int isr_door2ButtonPin = 20;                      // detects door bell button 2 when grounded
+const int solenoid1Pin       = 21;                      // setting to high activates solenoid 1 to strike bar 1
+const int solenoid2Pin       = 22;                      // setting to high activates solenoid 2 to strike bar 2
+
+//
+// Output unitless count app type missing so define it.
+//
+#define ESP_ZB_ZCL_AO_COUNT_UNITLESS_COUNT  ESP_ZB_ZCL_AO_SET_APP_TYPE_WITH_ID( ESP_ZB_ZCL_AO_APP_TYPE_COUNT_UNITLESS, 0x0000)
+//
+// Debugging stuff, simple macro to log debug for us.
+//
+static const char *TAG = "zDoor"; 
+#define DPRINTF(format, ...)  ESP_LOGD(TAG, format, ##__VA_ARGS__) 
+
+//
+// Set 1 and you'll get lots of useful info as it runs. For debugging the lower layer Zibgee see the tools settings
+// in the Arduino menu for use with the debug enabled library and debug levels in that core. We can also compile in/out 
+// the watch dog timers. 
+//
+const bool debug_g = true;
+const bool wdt_g   = true;
+
+// 
+// Non volatile storage for debugging. When we restart etc. we will write the reasons 
+// and track last uptime etc. for display via a Zigbee debug cluster sensor.
+//
+const char       *ha_nvs_name = "_MRVZDOOR_";              // Unique name for our partition
+const char       *ha_nvs_vname= "_vars_";                  // name for our packeed variables
+nvs_handle_t      ha_nvs_handle = 0;                       // Once open this is read/write to NVS
+uint32_t          ha_nvs_last_uptime = 0;                  // minutes we were up last time before reboot
+uint32_t          ha_nvs_last_reboot_reason = 0;           // why we rebooted last time. (0 factory reset)
+uint32_t          ha_nvs_last_reboot_count = 0;            // increase each reboot except factory reset
+bool              isr_door1ButtonStatus = false;
+bool              isr_door2ButtonStatus = false;
+
+//
+// We are looking for persistant values of the last reboot reason and last uptime. We store these two packed
+// into a single Uint32 which we depack after reading from the NVS.
+//
+void ha_nvs_read()
+{    
+     ha_nvs_last_reboot_reason = 0;
+     ha_nvs_last_uptime        = 0;
+     ha_nvs_last_reboot_count  = 0;
+     //
+     esp_err_t err = nvs_flash_init();
+     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        // NVS partition was truncated and needs to be erased
+        nvs_flash_erase();
+        nvs_flash_init();
+        if (debug_g) DPRINTF("ha_nvs_read - nvs_flash_init\n", esp_err_to_name(err));
+     }
+     err = nvs_open(ha_nvs_name, NVS_READWRITE, &ha_nvs_handle);
+     if (err != ESP_OK) {
+        if (debug_g) DPRINTF("ha_nvs_read - Error (%s) opening NVS name %s!\n", esp_err_to_name(err), ha_nvs_name);
+        return;
+     }  
+     //
+     uint32_t vars;
+     err = nvs_get_u32(ha_nvs_handle, ha_nvs_vname, &vars);
+     if (err != ESP_OK) {
+          if (debug_g) DPRINTF("ha_nvs_read - cant get variable name %s\n", ha_nvs_name);
+          return;
+     }
+     ha_nvs_last_reboot_reason  = vars         & 0xff;
+     ha_nvs_last_reboot_count   = (vars >> 8)  & 0xff;
+     ha_nvs_last_uptime         = (vars >> 16) & 0xffff;
+     ha_nvs_last_reboot_reason += esp_reset_reason() * 1000;  // See below for why * 1000
+     /* 
+      * For convenient reference. We multiply these by 1000 to we can see the 
+      * ESPs idea why it rebooted together with our own reboot reason as a single
+      * number displayed as a Zigbee cluster. This is taken from the enum so they 
+      * start at 0,1,2... 
+      *
+      * ESP_RST_UNKNOWN,    //!< Reset reason can not be determined
+      * ESP_RST_POWERON,    //!< Reset due to power-on event
+      * ESP_RST_EXT,        //!< Reset by external pin (not applicable for ESP32)
+      * ESP_RST_SW,         //!< Software reset via esp_restart
+      * ESP_RST_PANIC,      //!< Software reset due to exception/panic
+      * ESP_RST_INT_WDT,    //!< Reset (software or hardware) due to interrupt watchdog
+      * ESP_RST_TASK_WDT,   //!< Reset due to task watchdog
+      * ESP_RST_WDT,        //!< Reset due to other watchdogs
+      * ESP_RST_DEEPSLEEP,  //!< Reset after exiting deep sleep mode
+      * ESP_RST_BROWNOUT,   //!< Brownout reset (software or hardware)
+      * ESP_RST_SDIO,       //!< Reset over SDIO
+      * ESP_RST_USB,        //!< Reset by USB peripheral
+      * ESP_RST_JTAG,       //!< Reset by JTAG
+      * ESP_RST_EFUSE,      //!< Reset due to efuse error
+      * ESP_RST_PWR_GLITCH, //!< Reset due to power glitch detected
+      * ESP_RST_CPU_LOCKUP, //!< Reset due to CPU lock up (double exception)
+      */
+     if (debug_g) {
+          DPRINTF("ha_nvs_read got vars=%x, reason %d, count %d, uptime=%d\n", vars,
+               ha_nvs_last_reboot_reason, ha_nvs_last_reboot_count, ha_nvs_last_uptime);
+     }
+}
+
+//
+// And here is the write to NVS of the attributes after they have been changed and sent to the Heat Pump
+//
+void ha_nvs_write(uint32_t reason = 0, uint32_t uptime = 0)
+{
+     ha_nvs_last_reboot_count = (ha_nvs_last_reboot_count + 1) & 0xff;
+     reason &= 0xff;
+     uptime &= 0x0000fffff;
+     uint32_t vars  = reason | (ha_nvs_last_reboot_count << 8) | (uptime << 16);
+     if (debug_g) {
+          DPRINTF("ha_nvs_write got vars=%x, reason %d, count %d, uptime=%d\n", vars, reason, ha_nvs_last_reboot_count, uptime);
+     }
+     esp_err_t err = nvs_set_u32(ha_nvs_handle, ha_nvs_vname, vars);
+     if (err != ESP_OK) {
+         if (debug_g) DPRINTF("ha_nvs_write  %s can't write, because %s\n", ha_nvs_vname, esp_err_to_name(err));
+         return;
+     }
+     err = nvs_commit(ha_nvs_handle);
+     if (err != ESP_OK) {
+         if (debug_g) DPRINTF("ha_nvs_write %s can't commit, because %s\n", ha_nvs_vname, esp_err_to_name(err));
+     }  
+}
+// 
+// Function complete shutdown and restart. Forward declared also a flash sequence for factory reset.
+//
+extern void ha_restart(uint32_t reason, uint32_t uptime); 
+extern void rgb_led_set_factory_reset();
+
+//
+// Interrupt handler for Reset button. If its pressed we do full factory reset. Normal reset is just done with a power off/on.
+//
+void isr_resetButtonPress()
+{      
+     rgb_led_set_factory_reset();                       // Go white so its obvious
+     Zigbee.factoryReset(false);                        // This should do the same but not sure it does anyway ...
+     ha_restart(0, 0);                                  // And stop all the Zigbee stuff and just restart the ESP
+}
+
+//
+// Door bell button 1 or 2 pressed, just remember it (its handled in the main loop). Also do some debouncing to avoid
+// too many hits in a short period of time.
+//
+void isr_door1ButtonPress()
+{    static unsigned long last_t = 0;
+     unsigned long now_t = millis();
+     if ((now_t > last_t) && (now_t - last_t > 1000))
+         isr_door1ButtonStatus = true;
+     last_t = now_t;
+}
+//
+void isr_door2ButtonPress()
+{    static unsigned long last_t = 0;
+     unsigned long now_t = millis();
+     if ((now_t > last_t) && (now_t - last_t > 1000))
+         isr_door2ButtonStatus = true;
+     last_t = now_t;
+}
+
+//
+// Setup the Input and Output Interrupt service routine for the reset button. Just call the isr_resetButtonPress routing when the pin goes LOW.
+// This triggers a factory reset.
+//
+void hw_setup()
+{   
+     pinMode(isr_resetButtonPin, INPUT_PULLUP); 
+     attachInterrupt(digitalPinToInterrupt(isr_resetButtonPin), isr_resetButtonPress,   FALLING);  
+     pinMode(isr_door1ButtonPin, INPUT_PULLUP);
+     attachInterrupt(digitalPinToInterrupt(isr_door1ButtonPin), isr_door1ButtonPress,   FALLING);  
+     pinMode(isr_door2ButtonPin, INPUT_PULLUP);
+     attachInterrupt(digitalPinToInterrupt(isr_door2ButtonPin), isr_door2ButtonPress,   FALLING);   
+     pinMode(solenoid1Pin, OUTPUT);
+     pinMode(solenoid2Pin, OUTPUT);
+     digitalWrite(solenoid1Pin, LOW);
+     digitalWrite(solenoid2Pin, LOW);
+     isr_door1ButtonStatus = false;
+     isr_door2ButtonStatus = false;
+}
+
+//
+// If the task watch dog times out, rather than use the system handler it will come here and we do a nice
+// controlled reboot and keep track of the reason and how long we were up for better debugging.
+//
+void esp_task_wdt_isr_user_handler(void)
+{
+     ha_restart(1, millis()/1000); 
+}
+
+//
+// Debugg Clusters
+//
+ZigbeeAnalog      zbRebootReason= ZigbeeAnalog(10);      // reason for last reboot
+ZigbeeAnalog      zbLastUptime  = ZigbeeAnalog(11);      // How long it was up last time before reboot
+ZigbeeAnalog      zbRebootCount = ZigbeeAnalog(12);      // How many reboots since factory reset
+ZigbeeAnalog      zbUptime      = ZigbeeAnalog(13);      // Seconds since last reboot.
+// 
+// These are the EP control entities each has one cluser which is a 'knob' that controls an HVAC parameter
+//
+ZigbeeBinary      zbDoor1Button  = ZigbeeBinary(14);      // Door button 1
+ZigbeeBinary      zbDoor2Button  = ZigbeeBinary(15);      // Door button 2
+ZigbeeAnalog      zbDoor1Play    = ZigbeeAnalog(16);      // Tone to play when door 1 pressed.
+ZigbeeAnalog      zbDoor2Play    = ZigbeeAnalog(17);      // Tone to play when door 2 plressed.
+
+//
+// These are the variables that maintain the state of what HA has asked to be set
+// set.
+//
+unsigned int ha_door1ButtonStatus   = 0;    // if HA thinks door button 1 is pressed or not
+unsigned int ha_door2ButtonStatus   = 0;    // if HA thinks door button 2 is pressed or not
+unsigned int ha_door1PlayStatus     = 0;    // tone to play when button 1 is pressed
+unsigned int ha_door2PlayStatus     = 0;    // tone to play when button 2 is pressed
+//
+// Keep HA up to date with any changes that happen on the heat pump from the serial updates.
+//
+void ha_sync_status()
+{
+  
+     zbDoor1Play.setAnalogOutput(ha_door1PlayStatus);
+     zbDoor2Play.setAnalogOutput(ha_door2PlayStatus);
+     zbDoor1Button.setBinaryInput(ha_door1ButtonStatus);
+     zbDoor2Button.setBinaryInput(ha_door2ButtonStatus);
+     zbRebootReason.setAnalogInput(ha_nvs_last_reboot_reason);
+     zbLastUptime.setAnalogInput(ha_nvs_last_uptime);
+     zbRebootCount.setAnalogInput(ha_nvs_last_reboot_count);
+     zbUptime.setAnalogInput(millis()/1000);
+     //
+     zbDoor1Play.reportAnalogOutput();
+     zbDoor2Play.reportAnalogOutput();
+     zbDoor1Button.reportBinaryInput();
+     zbDoor2Button.reportBinaryInput();
+     zbRebootReason.reportAnalogInput();
+     zbLastUptime.reportAnalogInput();
+     zbRebootCount.reportAnalogInput();
+     zbUptime.reportAnalogInput();
+}
+
+//
+// These are just useful debugging functions to display the attributes that HA has given us.
+// One for each attributes.
+//
+void ha_displayDoor1PlayStatus()
+{
+     DPRINTF("Door1PlayStatus     = %d\n", ha_door1PlayStatus); 
+}
+//
+void ha_displayDoor2PlayStatus()
+{
+     DPRINTF("Door2PlayStatus     = %d\n", ha_door2PlayStatus); 
+}
+//
+void ha_setDoor1PlayStatus(float value)
+{
+     ha_door1PlayStatus = value;
+     if (debug_g) { DPRINTF("HA=> "); ha_displayDoor1PlayStatus(); }
+}
+//
+void ha_setDoor2PlayStatus(float value)
+{
+     ha_door2PlayStatus = value;
+     if (debug_g) { DPRINTF("HA=> "); ha_displayDoor2PlayStatus(); }
+}
+
+//
+// We use the color RGB LED to indicate state.
+//
+const uint8_t RGB_LED_OFF    = 0;        // Enums are causing compiler problems when passed as first argument.
+const uint8_t RGB_LED_WHITE  = 1;        // so back to old school.
+const uint8_t RGB_LED_RED    = 2;
+const uint8_t RGB_LED_GREEN  = 3;
+const uint8_t RGB_LED_BLUE   = 4;
+const uint8_t RGB_LED_ORANGE = 5;
+const uint8_t RGB_MAX        = RGB_BRIGHTNESS/8;      // Fairly dim or they keep people awake
+const uint8_t RGB_MIN        = 0;
+#define       RGB_ORDER        LED_COLOR_ORDER_RGB    // Compiler problems passing enums, have to be explicit
+//
+void rgb_led_set(int color) {
+     switch(color) {                                  //RED     GREEN     BLUE
+         case RGB_LED_GREEN : rgbLedWriteOrdered(RGB_BUILTIN, RGB_ORDER, RGB_MIN, RGB_MAX,  RGB_MIN); break;
+         case RGB_LED_WHITE : rgbLedWriteOrdered(RGB_BUILTIN, RGB_ORDER, RGB_MAX, RGB_MAX,  RGB_MAX); break;
+         case RGB_LED_RED   : rgbLedWriteOrdered(RGB_BUILTIN, RGB_ORDER, RGB_MAX, RGB_MIN,  RGB_MIN); break;          
+         case RGB_LED_BLUE  : rgbLedWriteOrdered(RGB_BUILTIN, RGB_ORDER, RGB_MIN, RGB_MIN,  RGB_MAX); break;
+         case RGB_LED_ORANGE: rgbLedWriteOrdered(RGB_BUILTIN, RGB_ORDER, RGB_MAX, RGB_MAX/2,RGB_MIN); break;
+         case RGB_LED_OFF   : rgbLedWriteOrdered(RGB_BUILTIN, RGB_ORDER, RGB_MIN, RGB_MIN,  RGB_MIN); break;
+     }
+}
+//
+//   Simple LED flash routine, should really use a background task to do this.. tbd. Flash the chosen color and
+//   then return to the restore color after.
+//
+void rgb_led_flash(int color, int restore_color)
+{
+     for(int i = 0; i < 5; i++) {
+        rgb_led_set(color);
+        delay(50);
+        rgb_led_set(RGB_LED_OFF);
+        delay(50);
+     }
+     rgb_led_set(restore_color);
+}
+
+//
+// We are in an interrupt handler for the reset button and will indicate a factory reset.
+// Just use white for now.
+//
+void rgb_led_set_factory_reset()
+{
+     rgb_led_set(RGB_LED_WHITE);
+}
+
+//
+// Called when device is asked to identify itself. We will just flash alternating white and green for 1/2 second or so.
+// We get called 5 or 6 times with x = 5, 4, ... down to 0. We only triggers the flashing on the 0 call.
+//
+void ha_identify(uint16_t x)
+{
+     if (debug_g) DPRINTF("******** HA => IDENTIFY(%d) ******\n", (int) x);
+     //
+     if (x == 0) {
+        rgb_led_flash(RGB_LED_WHITE, RGB_LED_WHITE);
+        delay(500);
+        rgb_led_flash(RGB_LED_GREEN, RGB_LED_GREEN);
+        delay(500);
+        rgb_led_flash(RGB_LED_WHITE, RGB_LED_WHITE);
+        delay(500); 
+        rgb_led_set(RGB_LED_GREEN);
+     }
+}
+
+//
+// Complete restart for some reason and we've been up for some amount of time. Write this to the 
+// NVS for display after reboot.
+//
+void ha_restart(uint32_t reason, uint32_t uptime)
+{  
+     ha_nvs_write(reason, uptime);        // remember why we are restarting so it can be shown in HA next time
+     rgb_led_set(RGB_LED_OFF);            // Sometimes gets stuck on, don't know why perhaps timing.      
+     delay(100);
+     rgb_led_set(RGB_LED_OFF);            // So do it twice .
+     delay(100);
+     if (debug_g) DPRINTF("Restarting...\n"); 
+     Zigbee.closeNetwork();
+     Zigbee.stop();
+     delay(100);
+     ESP.restart();
+}
+
+//
+// When one of the buttons is pressed this function is called with the mode corresponding to the desired behavior 
+// for the given button.
+//
+void solenoidsPlay(unsigned mode)
+{
+     switch(mode) {
+          case 0: digitalWrite(solenoid1Pin, true);
+                  delay(500);
+                  digitalWrite(solenoid1Pin, false); 
+                  break;
+          case 1: digitalWrite(solenoid2Pin, true);
+                  delay(500);
+                  digitalWrite(solenoid2Pin, false); 
+                  break;
+          default:
+                  digitalWrite(solenoid1Pin, true);
+                  digitalWrite(solenoid2Pin, true);
+                  delay(500);
+                  digitalWrite(solenoid1Pin, false); 
+                  digitalWrite(solenoid2Pin, false);
+                  break;
+     }
+}
+// 
+// We woke up, configure zibgee and wait for connection, then process any pending requests
+// and go back to sleep. 
+//
+void setup() {
+     //
+     // Debug stuff
+     //
+     if (debug_g) {
+         esp_log_level_set(TAG, ESP_LOG_DEBUG);
+         DPRINTF("RiverView S/W Zibgee 3.0 Solenoid Door Bells");
+     }
+     //
+     // We get debug information from last reboot (uptime and reboot reason etc.)
+     ha_nvs_read();
+     //
+     // Get everything back to square one, we don't always power reset and I'm not convinced these get reset
+     // as globals when a panic restart happens.
+     //
+     ha_door1ButtonStatus  = 0;    // if HA thinks door button 1 is pressed or not
+     ha_door2ButtonStatus  = 0;    // if HA thinks door button 2 is pressed or not
+     ha_door1PlayStatus    = 0;    // tone to play when button 1 is pressed
+     ha_door2PlayStatus    = 0;    // tone to play when button 2 is pressed
+     //
+     // Watch dog timer on this task to panic if we don't get to main loop regulary.
+     //
+     if (wdt_g) {
+         static const esp_task_wdt_config_t wdt_config = {                  // MUST BE CONST!!
+              .timeout_ms = 10 * 60 * 1000,                                 // 10 minutes max to get back to main loop()
+              .idle_core_mask = (1 << CONFIG_FREERTOS_NUMBER_OF_CORES) - 1, // Bitmask of all cores
+              .trigger_panic = true };                                      // no panic, just restart
+         esp_task_wdt_reconfigure(&wdt_config);
+         esp_task_wdt_add(NULL);
+         esp_task_wdt_status(NULL);
+     }
+     //
+     rgb_led_flash(RGB_LED_RED, RGB_LED_RED);
+     //
+     // enable interrupts for reset buttons door bell buttons and configure solenoids outputs
+     //
+     hw_setup();
+     //
+     // Add the zibgee clusters (buttons/sliders etc.)
+     //
+     const char *MFGR = "RiverView";    // Because my home office looks out over the ottwawa river ;)
+     const char *MODL = "zDoor";        // Door bell interface
+     //
+     if (debug_g) DPRINTF("Door 1 play\n");
+     zbDoor1Play.setManufacturerAndModel(MFGR,MODL);
+     zbDoor1Play.addAnalogOutput();
+     zbDoor1Play.setAnalogOutputApplication(ESP_ZB_ZCL_AO_COUNT_UNITLESS_COUNT);
+     zbDoor1Play.setAnalogOutputDescription("Tones (0=off)");
+     zbDoor1Play.setAnalogOutputResolution(1);
+     zbDoor1Play.setAnalogOutputMinMax(0, 10);  
+     zbDoor1Play.onAnalogOutputChange(ha_setDoor1PlayStatus);
+     //
+     if (debug_g) DPRINTF("Door 2 play\n");
+     zbDoor2Play.setManufacturerAndModel(MFGR,MODL);
+     zbDoor2Play.addAnalogOutput();
+     zbDoor2Play.setAnalogOutputApplication(ESP_ZB_ZCL_AO_COUNT_UNITLESS_COUNT);
+     zbDoor2Play.setAnalogOutputDescription("Tones (0=off)");
+     zbDoor2Play.setAnalogOutputResolution(1);
+     zbDoor2Play.setAnalogOutputMinMax(0, 10);  
+     zbDoor2Play.onAnalogOutputChange(ha_setDoor2PlayStatus);
+     //
+     if (debug_g) DPRINTF("Door Button 1\n");
+     zbDoor1Button.setManufacturerAndModel(MFGR,MODL);
+     zbDoor1Button.addBinaryInput();
+     zbDoor1Button.setBinaryInputApplication(BINARY_INPUT_APPLICATION_TYPE_HVAC_UNIT_ENABLE);
+     zbDoor1Button.setBinaryInputDescription("Door Button 1");
+     //
+     if (debug_g) DPRINTF("Door Button 2\n");
+     zbDoor2Button.setManufacturerAndModel(MFGR,MODL);
+     zbDoor2Button.addBinaryInput();
+     zbDoor2Button.setBinaryInputApplication(BINARY_INPUT_APPLICATION_TYPE_HVAC_UNIT_ENABLE);
+     zbDoor2Button.setBinaryInputDescription("Door Button 2");
+     //
+     if (debug_g) DPRINTF("RebootReason cluster\n");
+     zbRebootReason.setManufacturerAndModel(MFGR,MODL);
+     zbRebootReason.addAnalogInput();
+     zbRebootReason.setAnalogInputApplication(ESP_ZB_ZCL_AI_COUNT_UNITLESS_COUNT);
+     zbRebootReason.setAnalogInputDescription("Last Reboot Reason");
+     zbRebootReason.setAnalogInputResolution(1.0);
+     //
+     if (debug_g) DPRINTF("LastUptime cluster\n");
+     zbLastUptime.setManufacturerAndModel(MFGR,MODL);
+     zbLastUptime.addAnalogInput();
+     zbLastUptime.setAnalogInputApplication(ESP_ZB_ZCL_AI_COUNT_UNITLESS_COUNT);
+     zbLastUptime.setAnalogInputDescription("Last Uptime s");
+     zbLastUptime.setAnalogInputResolution(1.0);
+     //
+     if (debug_g) DPRINTF("RebootCount cluster\n");
+     zbRebootCount.setManufacturerAndModel(MFGR,MODL);
+     zbRebootCount.addAnalogInput();
+     zbRebootCount.setAnalogInputApplication(ESP_ZB_ZCL_AI_COUNT_UNITLESS_COUNT);
+     zbRebootCount.setAnalogInputDescription("Reboot Count");
+     zbRebootCount.setAnalogInputResolution(1.0);
+     //
+     if (debug_g) DPRINTF("This Uptime\n");
+     zbUptime.setManufacturerAndModel(MFGR,MODL);
+     zbUptime.addAnalogInput();
+     zbUptime.setAnalogInputApplication(ESP_ZB_ZCL_AI_COUNT_UNITLESS_COUNT);
+     zbUptime.setAnalogInputDescription("This Uptime s");
+     zbUptime.setAnalogInputResolution(1.0);
+     //
+     if (debug_g) DPRINTF("Set mains power\n");
+     zbDoor1Button.setPowerSource(ZB_POWER_SOURCE_MAINS); 
+     zbDoor1Button.onIdentify(ha_identify);
+     //
+     Zigbee.addEndpoint(&zbDoor1Button);
+     Zigbee.addEndpoint(&zbDoor2Button);
+     Zigbee.addEndpoint(&zbDoor1Play);
+     Zigbee.addEndpoint(&zbDoor2Play);
+     Zigbee.addEndpoint(&zbRebootReason);
+     Zigbee.addEndpoint(&zbLastUptime);
+     Zigbee.addEndpoint(&zbRebootCount);
+     Zigbee.addEndpoint(&zbUptime);
+     //
+     // Create a custom Zigbee configuration for End Device with longer timeouts/keepalive
+     //
+     esp_zb_cfg_t zigbeeConfig =                             \
+       {  .esp_zb_role = ESP_ZB_DEVICE_TYPE_ED,              \
+          .install_code_policy = false,                      \
+          .nwk_cfg = {                                       \
+            .zed_cfg =  {                                    \                                                          
+                .ed_timeout = ESP_ZB_ED_AGING_TIMEOUT_16MIN, \
+                .keep_alive = 3000,                          \
+              },                                             \
+          },                                                 \
+       };
+     //
+     if (debug_g) DPRINTF("Starting Zigbee\n");
+     rgb_led_flash(RGB_LED_ORANGE, RGB_LED_ORANGE);
+     //
+     // When all EPs are registered, start Zigbee in End Device mode
+     //
+     if (!Zigbee.begin(&zigbeeConfig, false)) { 
+        if (debug_g) {
+            DPRINTF("Zigbee failed to start!\n");
+            DPRINTF("Rebooting ESP32!\n");
+        }
+        rgb_led_flash(RGB_LED_RED, RGB_LED_RED);  // Sometimes it stays orange
+        rgb_led_flash(RGB_LED_RED, RGB_LED_RED);
+        ha_restart(3, millis()/1000);             // restart and remember why
+     }
+     //
+     // Now connect to network.
+     //
+     if (debug_g) DPRINTF("Connecting to network\n");   
+     int tries = 0;      
+     while (!Zigbee.connected()) {
+        rgb_led_flash(RGB_LED_BLUE, RGB_LED_BLUE);         // the led sets have delays built in
+        delay(5000);
+        if (debug_g) DPRINTF("connecting..\n");
+        if (tries ++ > 360) {                              // Maximum 30 minutes trying    
+           if (debug_g) {
+               DPRINTF("Zigbee failed to connect!\n");
+               DPRINTF("Rebooting ESP32!\n");
+           }
+           rgb_led_flash(RGB_LED_ORANGE, RGB_LED_ORANGE);  // We tried for 30 minutes, restart.
+           rgb_led_flash(RGB_LED_RED, RGB_LED_RED);
+           ha_restart(4, millis()/1000);   
+        }
+     }
+     rgb_led_flash(RGB_LED_BLUE, RGB_LED_BLUE);   
+     if (debug_g) DPRINTF("Successfully connected to Zigbee network\n");
+     //
+     // Update the debug related information to HA.
+     //
+     ha_sync_status();
+}
+
+//
+// In the loop we just process any pending requests, the requests came via the callbacks.
+// We use a watch dog timer to make sure we get into this loop at least every 10 minutes or so.
+// If we don't get here in time we will get a hardware reset.
+//
+void loop()
+{    static int ix = 0;            // Loop counter 0..4 for LED on/of flash choice.
+     //
+     if (debug_g) DPRINTF("loop()\n");
+     //
+     if (!Zigbee.connected()) {
+         if (debug_g) DPRINTF("zigbee disconnected while in loop()- restarting\n");
+         ha_restart(5, millis()/1000);   
+     }
+  
+     int status_color = RGB_LED_GREEN;
+     //
+     // And feed the watch dog because all is well, zigbee ok and serial comms ok.
+     // 
+     if (wdt_g) esp_task_wdt_reset();  
+
+     //
+     // Check to see if either door bell is pressed. Right now we just enter a critical section, copy the status and
+     // clear the interrupt status. We can check the status later for changes.
+     //
+     noInterrupts();          
+     delay(1);
+     ha_door1ButtonStatus = isr_door1ButtonStatus;
+     isr_door1ButtonStatus = false;
+     ha_door2ButtonStatus = isr_door2ButtonStatus;
+     isr_door2ButtonStatus = false;
+     interrupts();
+
+     //
+     // Every so often (5 mins) we update the HA, or if the status of one of the door bell button
+     // changes we update that immediately.
+     //
+     {  const unsigned long  MAX_TIME              = 60*5;
+        static unsigned long last_update_time      = 0;
+        unsigned long        now_time              = millis() / 1000;
+        static unsigned      lastDoor1ButtonStatus = false;
+        static unsigned      lastDoor2ButtonStatus = false;
+
+        bool status_change = (lastDoor1ButtonStatus != ha_door1ButtonStatus) ||
+                             (lastDoor2ButtonStatus != ha_door2ButtonStatus);
+        //
+        if (status_change || (last_update_time + MAX_TIME) <= now_time) {
+            if (debug_g) DPRINTF("loop - issue connected cluster update %ld %ld %d %d\n", 
+                                            last_update_time, now_time, ha_door1ButtonStatus, ha_door2ButtonStatus);
+            last_update_time       = now_time;
+            lastDoor1ButtonStatus = ha_door1ButtonStatus;
+            lastDoor2ButtonStatus = ha_door2ButtonStatus;
+            ha_sync_status();                 
+        }
+     }
+
+     //
+     // Now do any actual work based on the button status.
+     // 
+     if (ha_door1ButtonStatus == true) {
+         solenoidsPlay(ha_door1PlayStatus);
+     }
+     //
+     if (ha_door2ButtonStatus == true) {
+        solenoidsPlay(ha_door2PlayStatus);
+     }
+     
+     //
+     // We always reset the button status after any processing.
+     //
+     ha_door1ButtonStatus = false;
+     ha_door2ButtonStatus = false;
+
+     //
+     // Alternate GREEN|WHITE/BLACK every loop instance. This is green for one second every 10 seconds or so means all good.
+     // If we get WHITE it means zigbee is up but serial is not connected.
+     //
+     rgb_led_set(ix != 0 ? RGB_LED_OFF : status_color);
+     ix = (ix + 1) % 5;
+     //
+     // No need to buzz this loop, little pause is fine.
+     //
+     delay(2000);
+}
+
+
+
