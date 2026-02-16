@@ -253,7 +253,7 @@ unsigned int ha_door2PlayStatus     = 0;    // tone to play when button 2 is pre
 //
 void ha_sync_status()
 {
-  
+     if (debug_g) DPRINTF("HA sync %d %d\n", ha_door1ButtonStatus, ha_door2ButtonStatus);
      zbDoor1Play.setAnalogOutput(ha_door1PlayStatus);
      zbDoor2Play.setAnalogOutput(ha_door2PlayStatus);
      zbDoor1Button.setBinaryInput(ha_door1ButtonStatus);
@@ -388,7 +388,8 @@ void ha_restart(uint32_t reason, uint32_t uptime)
 // for the given button.
 //
 void solenoidsPlay(unsigned mode)
-{
+{    if (debug_g) 
+         DPRINTF("solenoidsPlay %d\n", mode);
      switch(mode) {
           case 0: digitalWrite(solenoid1Pin, true);
                   delay(500);
@@ -587,8 +588,6 @@ void setup() {
 void loop()
 {    static int ix = 0;            // Loop counter 0..4 for LED on/of flash choice.
      //
-     if (debug_g) DPRINTF("loop()\n");
-     //
      if (!Zigbee.connected()) {
          if (debug_g) DPRINTF("zigbee disconnected while in loop()- restarting\n");
          ha_restart(5, millis()/1000);   
@@ -605,12 +604,13 @@ void loop()
      // clear the interrupt status. We can check the status later for changes.
      //
      noInterrupts();          
-     delay(1);
      ha_door1ButtonStatus = isr_door1ButtonStatus;
      isr_door1ButtonStatus = false;
      ha_door2ButtonStatus = isr_door2ButtonStatus;
      isr_door2ButtonStatus = false;
      interrupts();
+
+     if (debug_g) DPRINTF("loop() Door1=%d Door2=%d\n", ha_door1ButtonStatus, ha_door2ButtonStatus);
 
      //
      // Every so often (5 mins) we update the HA, or if the status of one of the door bell button
