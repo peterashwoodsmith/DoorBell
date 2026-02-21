@@ -276,8 +276,8 @@ ZigbeeAnalog      zbDoor2Play    = ZigbeeAnalog(17);      // Tone to play when d
 //
 unsigned int ha_door1ButtonStatus   = 0;    // if HA thinks door button 1 is pressed or not
 unsigned int ha_door2ButtonStatus   = 0;    // if HA thinks door button 2 is pressed or not
-unsigned int ha_door1PlayStatus     = 0;    // tone to play when button 1 is pressed
-unsigned int ha_door2PlayStatus     = 1;    // tone to play when button 2 is pressed
+unsigned int ha_door1PlayStatus     = 3;    // tone to play when button 1 is pressed Ding Dong Ding Dong Ding Dong
+unsigned int ha_door2PlayStatus     = 2;    // tone to play when button 2 is pressed Dong Dong Dong Dong Dong Dong
 //
 // Keep HA up to date with any changes that happen on the heat pump from the serial updates.
 //
@@ -414,42 +414,54 @@ void ha_restart(uint32_t reason, uint32_t uptime)
 }
 
 //
+// Make the DING sound, just strike solenoid 1 briefly and return it.
+//
+void DING() {
+     digitalWrite(solenoid1Pin, true);
+     delay(250);
+     digitalWrite(solenoid1Pin, false);
+     delay(250);
+}
+
+//
+// Make the DONG sound, just strike solenoid 2 briefly and return it.
+//
+void DONG() {
+     digitalWrite(solenoid2Pin, true);
+     delay(250);
+     digitalWrite(solenoid2Pin, false);
+     delay(250);
+}
+
+//
+// Strike the solenoids according to the mode pattern
+//
+void solenoidsStrike(unsigned mode)
+{    switch(mode) {
+          case 1: DING(); DING();              break;
+          case 2: DONG(); DONG();              break;
+          case 3: DING(); DONG();              break;
+          case 4: DONG(); DING();              break;
+          case 5: DING(); DING(); DONG();      break;
+          case 6: DONG(); DONG(); DING();      break;
+          case 7: DONG(); DING(); DONG();      break;
+          case 8: DING(); DONG(); DING();      break;
+          case 9: DONG(); DONG(); DONG();      break;
+          case 10:DING(); DING(); DING();      break;
+          default:                             break;
+     }
+}
+
+//
 // When one of the buttons is pressed this function is called with the mode corresponding to the desired behavior 
-// for the given button.
+// for the given button. The sequence is played three times with a short pause between.
 //
 void solenoidsPlay(unsigned mode)
 {    if (debug_g) 
          DPRINTF("solenoidsPlay %d\n", mode);
-     int i;
-     switch(mode) {
-          case 0: for(i = 0; i < 3; i++) {
-                      digitalWrite(solenoid1Pin, true);
-                      delay(250);
-                      digitalWrite(solenoid1Pin, false); 
-                      delay(250);
-                  }
-                  break;
-          case 1: for(i = 0; i < 3; i++) {
-                      digitalWrite(solenoid2Pin, true);
-                      delay(250);
-                      digitalWrite(solenoid2Pin, false); 
-                      delay(250);
-                  }
-                  break;
-          case 2: for(i = 0; i < 3; i++) {
-                      digitalWrite(solenoid2Pin, true);
-                      delay(250);
-                      digitalWrite(solenoid1Pin, false); 
-                      delay(250);
-                  }
-                  break;   
-          case 3: for(i = 0; i < 3; i++) {
-                      digitalWrite(solenoid1Pin, true);
-                      delay(250);
-                      digitalWrite(solenoid2Pin, false); 
-                      delay(250);
-                  }
-                  break;             
+     for(int i = 0; i < 3; i++) {
+         solenoidsStrike(mode);
+         delay(100);
      }
 }
 
@@ -489,8 +501,8 @@ void setup() {
      //
      ha_door1ButtonStatus  = 0;    // if HA thinks door button 1 is pressed or not
      ha_door2ButtonStatus  = 0;    // if HA thinks door button 2 is pressed or not
-     ha_door1PlayStatus    = 0;    // tone to play when button 1 is pressed
-     ha_door2PlayStatus    = 0;    // tone to play when button 2 is pressed
+     ha_door1PlayStatus    = 3;    // tone to play when button 1 is pressed
+     ha_door2PlayStatus    = 2;    // tone to play when button 2 is pressed
      //
      // Watch dog timer on this task to panic if we don't get to main loop regulary.
      //
