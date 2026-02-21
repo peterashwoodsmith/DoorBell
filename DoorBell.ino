@@ -40,10 +40,10 @@
 // Hardware Pin configurations.
 //
 const int isr_resetButtonPin = 18;                      // Causes a factory reset by erasing all NVS
-const int isr_door1ButtonPin = 19;                      // detects door bell button 1 when grounded
-const int isr_door2ButtonPin = 20;                      // detects door bell button 2 when grounded
-const int solenoid1Pin       = 21;                      // setting to high activates solenoid 1 to strike bar 1
-const int solenoid2Pin       = 22;                      // setting to high activates solenoid 2 to strike bar 2
+const int isr_door1ButtonPin = 2;                       // detects door bell button 1 when grounded
+const int isr_door2ButtonPin = 3;                       // detects door bell button 2 when grounded
+const int solenoid1Pin       = 10;                      // setting to high activates solenoid 1 to strike bar 1
+const int solenoid2Pin       = 11;                      // setting to high activates solenoid 2 to strike bar 2
 
 //
 // Output unitless count app type missing so define it.
@@ -73,8 +73,9 @@ nvs_handle_t      ha_nvs_handle = 0;                       // Once open this is 
 uint32_t          ha_nvs_last_uptime = 0;                  // minutes we were up last time before reboot
 uint32_t          ha_nvs_last_reboot_reason = 0;           // why we rebooted last time. (0 factory reset)
 uint32_t          ha_nvs_last_reboot_count = 0;            // increase each reboot except factory reset
-bool              isr_door1ButtonStatus = false;
-bool              isr_door2ButtonStatus = false;
+volatile uint32_t isr_door1ButtonStatus = 0;               // goes true when door bell one is pressed
+volatile uint32_t isr_door2ButtonStatus = 0;               // goes true when door bell two is pressed
+volatile bool     isr_no_zigbee = true;                    // true when no zigbee available (default bell behavior)            
 
 //
 // We are looking for persistant values of the last reboot reason and last uptime. We store these two packed
@@ -168,32 +169,57 @@ extern void rgb_led_set_factory_reset();
 
 //
 // Interrupt handler for Reset button. If its pressed we do full factory reset. Normal reset is just done with a power off/on.
+// We just look to see if we are getting a bunch of lows on the reset pin and if so we reset otherwise just ignore it as we can
+// get spurious interrupts when the solenoids activate.
 //
 void isr_resetButtonPress()
 {      
+     int n = 1;
+     for(int i = 0; i < 10; i++) {
+         n += (digitalRead(isr_resetButtonPin) == 0) ? 1 : 0;
+     }
+     if (n < 7) return;                                 // if its too much like noise ignore it. 
+     //
      rgb_led_set_factory_reset();                       // Go white so its obvious
      Zigbee.factoryReset(false);                        // This should do the same but not sure it does anyway ...
      ha_restart(0, 0);                                  // And stop all the Zigbee stuff and just restart the ESP
 }
 
 //
-// Door bell button 1 or 2 pressed, just remember it (its handled in the main loop). Also do some debouncing to avoid
-// too many hits in a short period of time.
+// Door bell button 1 or 2 pressed or released (changed) so if no zigbee connection we just reflect this directly to the solenoid
+// pins however if zibgee is up it is processed in the main loop. Note that we want to see a bit of a solid edge before declaring
+// a press so we look ahead a bit in time to make sure its staying low.
 //
 void isr_door1ButtonPress()
-{    static unsigned long last_t = 0;
-     unsigned long now_t = millis();
-     if ((now_t > last_t) && (now_t - last_t > 1000))
-         isr_door1ButtonStatus = true;
-     last_t = now_t;
+{    unsigned int pressed = (digitalRead(isr_door1ButtonPin) == 0) ? 1 : 0;
+     if (isr_no_zigbee) {
+         digitalWrite(solenoid1Pin, pressed);
+         return;
+     } 
+     if (pressed) { 
+         int n = 1;
+         for(int i = 0; i < 10; i++) {
+             n += (digitalRead(isr_door1ButtonPin) == 0) ? 1 : 0;
+         }
+         if (n < 7) return;
+         isr_door1ButtonStatus += 1;   
+     }    
 }
 //
 void isr_door2ButtonPress()
-{    static unsigned long last_t = 0;
-     unsigned long now_t = millis();
-     if ((now_t > last_t) && (now_t - last_t > 1000))
-         isr_door2ButtonStatus = true;
-     last_t = now_t;
+{    unsigned int pressed = (digitalRead(isr_door2ButtonPin) == 0) ? 1 : 0;
+     if (isr_no_zigbee) {
+         digitalWrite(solenoid2Pin, pressed);    
+         return;
+     } 
+     if (pressed) { 
+         int n = 1;
+         for(int i = 0; i < 10; i++) {
+             n += (digitalRead(isr_door2ButtonPin) == 0) ? 1 : 0;
+         }
+         if (n < 7) return;
+         isr_door2ButtonStatus += 1;   
+     }            
 }
 
 //
@@ -204,16 +230,20 @@ void hw_setup()
 {   
      pinMode(isr_resetButtonPin, INPUT_PULLUP); 
      attachInterrupt(digitalPinToInterrupt(isr_resetButtonPin), isr_resetButtonPress,   FALLING);  
+     //
      pinMode(isr_door1ButtonPin, INPUT_PULLUP);
-     attachInterrupt(digitalPinToInterrupt(isr_door1ButtonPin), isr_door1ButtonPress,   FALLING);  
+     attachInterrupt(digitalPinToInterrupt(isr_door1ButtonPin), isr_door1ButtonPress,   CHANGE);   
+     //
      pinMode(isr_door2ButtonPin, INPUT_PULLUP);
-     attachInterrupt(digitalPinToInterrupt(isr_door2ButtonPin), isr_door2ButtonPress,   FALLING);   
+     attachInterrupt(digitalPinToInterrupt(isr_door2ButtonPin), isr_door2ButtonPress,   CHANGE);    
+     //
      pinMode(solenoid1Pin, OUTPUT);
      pinMode(solenoid2Pin, OUTPUT);
      digitalWrite(solenoid1Pin, LOW);
      digitalWrite(solenoid2Pin, LOW);
-     isr_door1ButtonStatus = false;
-     isr_door2ButtonStatus = false;
+     isr_door1ButtonStatus = 0;
+     isr_door2ButtonStatus = 0;
+     isr_no_zigbee = true;
 }
 
 //
@@ -247,7 +277,7 @@ ZigbeeAnalog      zbDoor2Play    = ZigbeeAnalog(17);      // Tone to play when d
 unsigned int ha_door1ButtonStatus   = 0;    // if HA thinks door button 1 is pressed or not
 unsigned int ha_door2ButtonStatus   = 0;    // if HA thinks door button 2 is pressed or not
 unsigned int ha_door1PlayStatus     = 0;    // tone to play when button 1 is pressed
-unsigned int ha_door2PlayStatus     = 0;    // tone to play when button 2 is pressed
+unsigned int ha_door2PlayStatus     = 1;    // tone to play when button 2 is pressed
 //
 // Keep HA up to date with any changes that happen on the heat pump from the serial updates.
 //
@@ -390,29 +420,59 @@ void ha_restart(uint32_t reason, uint32_t uptime)
 void solenoidsPlay(unsigned mode)
 {    if (debug_g) 
          DPRINTF("solenoidsPlay %d\n", mode);
+     int i;
      switch(mode) {
-          case 0: digitalWrite(solenoid1Pin, true);
-                  delay(500);
-                  digitalWrite(solenoid1Pin, false); 
+          case 0: for(i = 0; i < 3; i++) {
+                      digitalWrite(solenoid1Pin, true);
+                      delay(250);
+                      digitalWrite(solenoid1Pin, false); 
+                      delay(250);
+                  }
                   break;
-          case 1: digitalWrite(solenoid2Pin, true);
-                  delay(500);
-                  digitalWrite(solenoid2Pin, false); 
+          case 1: for(i = 0; i < 3; i++) {
+                      digitalWrite(solenoid2Pin, true);
+                      delay(250);
+                      digitalWrite(solenoid2Pin, false); 
+                      delay(250);
+                  }
                   break;
-          default:
-                  digitalWrite(solenoid1Pin, true);
-                  digitalWrite(solenoid2Pin, true);
-                  delay(500);
-                  digitalWrite(solenoid1Pin, false); 
-                  digitalWrite(solenoid2Pin, false);
-                  break;
+          case 2: for(i = 0; i < 3; i++) {
+                      digitalWrite(solenoid2Pin, true);
+                      delay(250);
+                      digitalWrite(solenoid1Pin, false); 
+                      delay(250);
+                  }
+                  break;   
+          case 3: for(i = 0; i < 3; i++) {
+                      digitalWrite(solenoid1Pin, true);
+                      delay(250);
+                      digitalWrite(solenoid2Pin, false); 
+                      delay(250);
+                  }
+                  break;             
      }
 }
+
+//
+// Force All solenoids off
+//
+void solenoids_reset()
+{    if (debug_g) 
+         DPRINTF("solenoidsReset\n");
+     digitalWrite(solenoid1Pin, false); 
+     digitalWrite(solenoid2Pin, false);
+}
+
 // 
 // We woke up, configure zibgee and wait for connection, then process any pending requests
 // and go back to sleep. 
 //
 void setup() {
+     //
+     // Until we have zibgee connection the button interrupts do normal door bell operation.
+     //
+     isr_no_zigbee = true;
+
      //
      // Debug stuff
      //
@@ -452,8 +512,8 @@ void setup() {
      //
      // Add the zibgee clusters (buttons/sliders etc.)
      //
-     const char *MFGR = "RiverView";    // Because my home office looks out over the ottwawa river ;)
-     const char *MODL = "zDoor";        // Door bell interface
+     const char *MFGR = "zRiverView";    // Because my home office looks out over the ottwawa river ;)
+     const char *MODL = "zzDoor";        // Door bell interface
      //
      if (debug_g) DPRINTF("Door 1 play\n");
      zbDoor1Play.setManufacturerAndModel(MFGR,MODL);
@@ -578,6 +638,11 @@ void setup() {
      // Update the debug related information to HA.
      //
      ha_sync_status();
+     //
+     // During Zigbee attach the button press will cause normal door bell operation,
+     // once we have zigbee its handled in the main loop.
+     //
+     isr_no_zigbee = false;
 }
 
 //
@@ -588,7 +653,10 @@ void setup() {
 void loop()
 {    static int ix = 0;            // Loop counter 0..4 for LED on/of flash choice.
      //
+     solenoids_reset();            // Make sure solenoids are off
+     //
      if (!Zigbee.connected()) {
+         isr_no_zigbee = true;
          if (debug_g) DPRINTF("zigbee disconnected while in loop()- restarting\n");
          ha_restart(5, millis()/1000);   
      }
@@ -600,18 +668,28 @@ void loop()
      if (wdt_g) esp_task_wdt_reset();  
 
      //
-     // Check to see if either door bell is pressed. Right now we just enter a critical section, copy the status and
-     // clear the interrupt status. We can check the status later for changes.
+     // Check to see if either door bell is pressed. We can check the status later for changes.
+     //       
+     ha_door1ButtonStatus = isr_door1ButtonStatus > 0;
+     ha_door2ButtonStatus = isr_door2ButtonStatus > 0;
+
+     if (debug_g && (isr_door1ButtonStatus + isr_door2ButtonStatus) > 0) {
+          DPRINTF("loop() Door1=%d Door2=%d\n", isr_door1ButtonStatus, isr_door2ButtonStatus);
+     }
+
      //
-     noInterrupts();          
-     ha_door1ButtonStatus = isr_door1ButtonStatus;
-     isr_door1ButtonStatus = false;
-     ha_door2ButtonStatus = isr_door2ButtonStatus;
-     isr_door2ButtonStatus = false;
-     interrupts();
-
-     if (debug_g) DPRINTF("loop() Door1=%d Door2=%d\n", ha_door1ButtonStatus, ha_door2ButtonStatus);
-
+     // Now do any actual work based on the button status.
+     // 
+     if (ha_door1ButtonStatus == true) {
+         solenoidsPlay(ha_door1PlayStatus);
+         isr_door1ButtonStatus = 0;       // Ignore any buttons pressed while we were playing tones.
+     }
+     //
+     if (ha_door2ButtonStatus == true) {
+        solenoidsPlay(ha_door2PlayStatus);
+        isr_door2ButtonStatus = 0;        // Ignore any buttons pressed while we were playing tones.
+     }
+     
      //
      // Every so often (5 mins) we update the HA, or if the status of one of the door bell button
      // changes we update that immediately.
@@ -629,40 +707,19 @@ void loop()
             if (debug_g) DPRINTF("loop - issue connected cluster update %ld %ld %d %d\n", 
                                             last_update_time, now_time, ha_door1ButtonStatus, ha_door2ButtonStatus);
             last_update_time       = now_time;
-            lastDoor1ButtonStatus = ha_door1ButtonStatus;
-            lastDoor2ButtonStatus = ha_door2ButtonStatus;
+            lastDoor1ButtonStatus  = ha_door1ButtonStatus;
+            lastDoor2ButtonStatus  = ha_door2ButtonStatus;
             ha_sync_status();                 
         }
      }
 
      //
-     // Now do any actual work based on the button status.
-     // 
-     if (ha_door1ButtonStatus == true) {
-         solenoidsPlay(ha_door1PlayStatus);
-     }
-     //
-     if (ha_door2ButtonStatus == true) {
-        solenoidsPlay(ha_door2PlayStatus);
-     }
-     
-     //
-     // We always reset the button status after any processing.
-     //
-     ha_door1ButtonStatus = false;
-     ha_door2ButtonStatus = false;
-
-     //
-     // Alternate GREEN|WHITE/BLACK every loop instance. This is green for one second every 10 seconds or so means all good.
-     // If we get WHITE it means zigbee is up but serial is not connected.
+     // Led is off for 4 seconds, then 1 second on Green .. etc. to indicate zibgee is up and ok.
      //
      rgb_led_set(ix != 0 ? RGB_LED_OFF : status_color);
      ix = (ix + 1) % 5;
      //
      // No need to buzz this loop, little pause is fine.
      //
-     delay(2000);
+     delay(1000);
 }
-
-
-
