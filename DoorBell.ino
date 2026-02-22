@@ -624,7 +624,7 @@ void setup() {
      zbDoor1Play.setManufacturerAndModel(MFGR,MODL);
      zbDoor1Play.addAnalogOutput();
      zbDoor1Play.setAnalogOutputApplication(ESP_ZB_ZCL_AO_COUNT_UNITLESS_COUNT);
-     zbDoor1Play.setAnalogOutputDescription("Tones (0=off)");
+     zbDoor1Play.setAnalogOutputDescription("Tones1 (0=off)");
      zbDoor1Play.setAnalogOutputResolution(1);
      zbDoor1Play.setAnalogOutputMinMax(0, 10);  
      zbDoor1Play.onAnalogOutputChange(ha_setDoor1PlayStatus);
@@ -633,7 +633,7 @@ void setup() {
      zbDoor2Play.setManufacturerAndModel(MFGR,MODL);
      zbDoor2Play.addAnalogOutput();
      zbDoor2Play.setAnalogOutputApplication(ESP_ZB_ZCL_AO_COUNT_UNITLESS_COUNT);
-     zbDoor2Play.setAnalogOutputDescription("Tones (0=off)");
+     zbDoor2Play.setAnalogOutputDescription("Tones2 (0=off)");
      zbDoor2Play.setAnalogOutputResolution(1);
      zbDoor2Play.setAnalogOutputMinMax(0, 10);  
      zbDoor2Play.onAnalogOutputChange(ha_setDoor2PlayStatus);
@@ -642,7 +642,7 @@ void setup() {
      zbDoorZPlay.setManufacturerAndModel(MFGR,MODL);
      zbDoorZPlay.addAnalogOutput();
      zbDoorZPlay.setAnalogOutputApplication(ESP_ZB_ZCL_AO_COUNT_UNITLESS_COUNT);
-     zbDoorZPlay.setAnalogOutputDescription("Tones (0=off)");
+     zbDoorZPlay.setAnalogOutputDescription("TonesZ (0=off)");
      zbDoorZPlay.setAnalogOutputResolution(1);
      zbDoorZPlay.setAnalogOutputMinMax(0, 10);  
      zbDoorZPlay.onAnalogOutputChange(ha_setDoorZPlayStatus);
@@ -651,7 +651,7 @@ void setup() {
      zbDoor1PlayReps.setManufacturerAndModel(MFGR,MODL);
      zbDoor1PlayReps.addAnalogOutput();
      zbDoor1PlayReps.setAnalogOutputApplication(ESP_ZB_ZCL_AO_COUNT_UNITLESS_COUNT);
-     zbDoor1PlayReps.setAnalogOutputDescription("Repetitions");
+     zbDoor1PlayReps.setAnalogOutputDescription("Repetitions1");
      zbDoor1PlayReps.setAnalogOutputResolution(1);
      zbDoor1PlayReps.setAnalogOutputMinMax(0, 10);  
      zbDoor1PlayReps.onAnalogOutputChange(ha_setDoor1PlayReps);
@@ -660,7 +660,7 @@ void setup() {
      zbDoor2PlayReps.setManufacturerAndModel(MFGR,MODL);
      zbDoor2PlayReps.addAnalogOutput();
      zbDoor2PlayReps.setAnalogOutputApplication(ESP_ZB_ZCL_AO_COUNT_UNITLESS_COUNT);
-     zbDoor2PlayReps.setAnalogOutputDescription("Repetitions");
+     zbDoor2PlayReps.setAnalogOutputDescription("Repetitions2");
      zbDoor2PlayReps.setAnalogOutputResolution(1);
      zbDoor2PlayReps.setAnalogOutputMinMax(0, 10);  
      zbDoor2PlayReps.onAnalogOutputChange(ha_setDoor2PlayReps);
@@ -669,7 +669,7 @@ void setup() {
      zbDoorZPlayReps.setManufacturerAndModel(MFGR,MODL);
      zbDoorZPlayReps.addAnalogOutput();
      zbDoorZPlayReps.setAnalogOutputApplication(ESP_ZB_ZCL_AO_COUNT_UNITLESS_COUNT);
-     zbDoorZPlayReps.setAnalogOutputDescription("Repetitions");
+     zbDoorZPlayReps.setAnalogOutputDescription("RepetitionsZ");
      zbDoorZPlayReps.setAnalogOutputResolution(1);
      zbDoorZPlayReps.setAnalogOutputMinMax(0, 10);  
      zbDoorZPlayReps.onAnalogOutputChange(ha_setDoorZPlayReps);
@@ -678,22 +678,22 @@ void setup() {
      zbDoor1Button.setManufacturerAndModel(MFGR,MODL);
      zbDoor1Button.addBinaryInput();
      zbDoor1Button.setBinaryInputApplication(BINARY_INPUT_APPLICATION_TYPE_HVAC_UNIT_ENABLE);
-     zbDoor1Button.setBinaryInputDescription("Door Button 1");
+     zbDoor1Button.setBinaryInputDescription("Button1");
      //
      if (debug_g) DPRINTF("Door Button 2\n");
      zbDoor2Button.setManufacturerAndModel(MFGR,MODL);
      zbDoor2Button.addBinaryInput();
      zbDoor2Button.setBinaryInputApplication(BINARY_INPUT_APPLICATION_TYPE_HVAC_UNIT_ENABLE);
-     zbDoor2Button.setBinaryInputDescription("Door Button 2");
+     zbDoor2Button.setBinaryInputDescription("Button2");
      //
      if (debug_g) DPRINTF("Door Button Z\n");
      zbDoorZButton.setManufacturerAndModel(MFGR,MODL);
      zbDoorZButton.addBinaryInput();
      zbDoorZButton.setBinaryInputApplication(BINARY_INPUT_APPLICATION_TYPE_HVAC_OTHER);
-     zbDoorZButton.setBinaryInputDescription("Door Button Z");
+     zbDoorZButton.setBinaryInputDescription("PlayZ");
      zbDoorZButton.addBinaryOutput();
      zbDoorZButton.setBinaryOutputApplication(BINARY_OUTPUT_APPLICATION_TYPE_HVAC_OTHER);
-     zbDoorZButton.setBinaryOutputDescription("Door Button Z");
+     zbDoorZButton.setBinaryOutputDescription("ButtonZ");
      zbDoorZButton.onBinaryOutputChange(ha_setDoorZButtonStatus);
      //
      if (debug_g) DPRINTF("RebootReason cluster\n");
@@ -830,7 +830,7 @@ void loop()
      ha_door2ButtonStatus = isr_door2ButtonStatus > 0;
 
      if (debug_g && (isr_door1ButtonStatus + isr_door2ButtonStatus) > 0) {
-          DPRINTF("loop() Door1=%d Door2=%d\n", isr_door1ButtonStatus, isr_door2ButtonStatus);
+         DPRINTF("loop() Door1=%d Door2=%d\n", isr_door1ButtonStatus, isr_door2ButtonStatus);
      }
 
      //
@@ -842,13 +842,14 @@ void loop()
      }
      //
      if (ha_door2ButtonStatus == true) {
-        solenoidsPlay(ha_door2PlayStatus, ha_door2PlayReps);
-        isr_door2ButtonStatus = 0;        // Ignore any buttons pressed while we were playing tones.
+         solenoidsPlay(ha_door2PlayStatus, ha_door2PlayReps);
+         isr_door2ButtonStatus = 0;        // Ignore any buttons pressed while we were playing tones.
      }
      //
      if (ha_doorZButtonStatus == true) {
-        solenoidsPlay(ha_doorZPlayStatus, ha_doorZPlayReps);
-        // Will be cleared after its resynchronized with HA back to false.
+         zbDoorZButton.setBinaryInput(ha_doorZButtonStatus);     // report sensor back to HA that we are playing it now.
+         zbDoorZButton.reportBinaryInput();
+         solenoidsPlay(ha_doorZPlayStatus, ha_doorZPlayReps);
      }
      //
      // Every so often (5 mins) we update the HA, or if the status of one of the door bell button
