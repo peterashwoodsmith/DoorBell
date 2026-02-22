@@ -258,17 +258,20 @@ void esp_task_wdt_isr_user_handler(void)
 //
 // Debugg Clusters
 //
-ZigbeeAnalog      zbRebootReason= ZigbeeAnalog(10);      // reason for last reboot
-ZigbeeAnalog      zbLastUptime  = ZigbeeAnalog(11);      // How long it was up last time before reboot
-ZigbeeAnalog      zbRebootCount = ZigbeeAnalog(12);      // How many reboots since factory reset
-ZigbeeAnalog      zbUptime      = ZigbeeAnalog(13);      // Seconds since last reboot.
-// 
-// These are the EP control entities each has one cluser which is a 'knob' that controls an HVAC parameter
+ZigbeeAnalog      zbRebootReason  = ZigbeeAnalog(10);      // reason for last reboot
+ZigbeeAnalog      zbLastUptime    = ZigbeeAnalog(11);      // How long it was up last time before reboot
+ZigbeeAnalog      zbRebootCount   = ZigbeeAnalog(12);      // How many reboots since factory reset
+ZigbeeAnalog      zbUptime        = ZigbeeAnalog(13);      // Seconds since last reboot.
 //
-ZigbeeBinary      zbDoor1Button  = ZigbeeBinary(14);      // Door button 1
-ZigbeeBinary      zbDoor2Button  = ZigbeeBinary(15);      // Door button 2
-ZigbeeAnalog      zbDoor1Play    = ZigbeeAnalog(16);      // Tone to play when door 1 pressed.
-ZigbeeAnalog      zbDoor2Play    = ZigbeeAnalog(17);      // Tone to play when door 2 plressed.
+ZigbeeBinary      zbDoor1Button   = ZigbeeBinary(14);      // Door button 1
+ZigbeeBinary      zbDoor2Button   = ZigbeeBinary(15);      // Door button 2
+ZigbeeBinary      zbDoorZButton   = ZigbeeBinary(18);      // button HA can press to cause a tone (yes its 18)
+ZigbeeAnalog      zbDoor1Play     = ZigbeeAnalog(16);      // Tone to play when door 1 pressed.
+ZigbeeAnalog      zbDoor2Play     = ZigbeeAnalog(17);      // Tone to play when door 2 plressed.
+ZigbeeAnalog      zbDoorZPlay     = ZigbeeAnalog(19);      // tone to play when HA presses the Z button
+ZigbeeAnalog      zbDoor1PlayReps = ZigbeeAnalog(20);      // how many times to repeat the tones for each button
+ZigbeeAnalog      zbDoor2PlayReps = ZigbeeAnalog(21);
+ZigbeeAnalog      zbDoorZPlayReps = ZigbeeAnalog(22);
 
 //
 // These are the variables that maintain the state of what HA has asked to be set
@@ -276,8 +279,13 @@ ZigbeeAnalog      zbDoor2Play    = ZigbeeAnalog(17);      // Tone to play when d
 //
 unsigned int ha_door1ButtonStatus   = 0;    // if HA thinks door button 1 is pressed or not
 unsigned int ha_door2ButtonStatus   = 0;    // if HA thinks door button 2 is pressed or not
+unsigned int ha_doorZButtonStatus   = 0;    // if HA presses this button we play
 unsigned int ha_door1PlayStatus     = 3;    // tone to play when button 1 is pressed Ding Dong Ding Dong Ding Dong
 unsigned int ha_door2PlayStatus     = 2;    // tone to play when button 2 is pressed Dong Dong Dong Dong Dong Dong
+unsigned int ha_doorZPlayStatus     = 4;    // tone to play when HA triggers doorZ button
+unsigned int ha_door1PlayReps       = 3;    // how many times to repeat tones for the given trigger
+unsigned int ha_door2PlayReps       = 3;
+unsigned int ha_doorZPlayReps       = 3;
 //
 // Keep HA up to date with any changes that happen on the heat pump from the serial updates.
 //
@@ -286,8 +294,18 @@ void ha_sync_status()
      if (debug_g) DPRINTF("HA sync %d %d\n", ha_door1ButtonStatus, ha_door2ButtonStatus);
      zbDoor1Play.setAnalogOutput(ha_door1PlayStatus);
      zbDoor2Play.setAnalogOutput(ha_door2PlayStatus);
+     zbDoorZPlay.setAnalogOutput(ha_doorZPlayStatus);
+
+     zbDoor1PlayReps.setAnalogOutput(ha_door1PlayReps);
+     zbDoor2PlayReps.setAnalogOutput(ha_door2PlayReps);
+     zbDoorZPlayReps.setAnalogOutput(ha_doorZPlayReps);
+
      zbDoor1Button.setBinaryInput(ha_door1ButtonStatus);
      zbDoor2Button.setBinaryInput(ha_door2ButtonStatus);
+
+     zbDoorZButton.setBinaryOutput(ha_doorZButtonStatus);    // HA can press this button to cause sound but
+     zbDoorZButton.setBinaryInput(ha_doorZButtonStatus);     // we reset it after we've finished playing.
+
      zbRebootReason.setAnalogInput(ha_nvs_last_reboot_reason);
      zbLastUptime.setAnalogInput(ha_nvs_last_uptime);
      zbRebootCount.setAnalogInput(ha_nvs_last_reboot_count);
@@ -295,8 +313,17 @@ void ha_sync_status()
      //
      zbDoor1Play.reportAnalogOutput();
      zbDoor2Play.reportAnalogOutput();
+     zbDoorZPlay.reportAnalogOutput();
+
+     zbDoor1PlayReps.reportAnalogOutput();
+     zbDoor2PlayReps.reportAnalogOutput();
+     zbDoorZPlayReps.reportAnalogOutput();
+     
      zbDoor1Button.reportBinaryInput();
      zbDoor2Button.reportBinaryInput();
+     zbDoorZButton.reportBinaryInput();
+     zbDoorZButton.reportBinaryOutput();
+
      zbRebootReason.reportAnalogInput();
      zbLastUptime.reportAnalogInput();
      zbRebootCount.reportAnalogInput();
@@ -306,7 +333,11 @@ void ha_sync_status()
 //
 // These are just useful debugging functions to display the attributes that HA has given us.
 // One for each attributes.
-//
+// 
+void ha_displayDoorZButtonStatus()
+{    DPRINTF("DoorZButtonStatus   = %d\n", ha_doorZButtonStatus);
+}
+
 void ha_displayDoor1PlayStatus()
 {
      DPRINTF("Door1PlayStatus     = %d\n", ha_door1PlayStatus); 
@@ -316,6 +347,30 @@ void ha_displayDoor2PlayStatus()
 {
      DPRINTF("Door2PlayStatus     = %d\n", ha_door2PlayStatus); 
 }
+//
+void ha_displayDoorZPlayStatus()
+{
+     DPRINTF("DoorZPlayStatus     = %d\n", ha_doorZPlayStatus); 
+}
+//
+//-------
+//
+void ha_displayDoor1PlayReps()
+{
+     DPRINTF("Door1PlayReps     = %d\n", ha_door1PlayReps); 
+}
+//
+void ha_displayDoor2PlayReps()
+{
+     DPRINTF("Door2PlayReps     = %d\n", ha_door2PlayReps); 
+}
+//
+void ha_displayDoorZPlayReps()
+{
+     DPRINTF("DoorZPlayReps     = %d\n", ha_doorZPlayReps); 
+}
+//
+// ---------
 //
 void ha_setDoor1PlayStatus(float value)
 {
@@ -327,6 +382,38 @@ void ha_setDoor2PlayStatus(float value)
 {
      ha_door2PlayStatus = value;
      if (debug_g) { DPRINTF("HA=> "); ha_displayDoor2PlayStatus(); }
+}
+//
+void ha_setDoorZPlayStatus(float value)
+{
+     ha_doorZPlayStatus = value;
+     if (debug_g) { DPRINTF("HA=> "); ha_displayDoorZPlayStatus(); }
+}
+//
+// -----
+//
+void ha_setDoor1PlayReps(float value)
+{
+     ha_door1PlayReps = value;
+     if (debug_g) { DPRINTF("HA=> "); ha_displayDoor1PlayReps(); }
+}
+//
+void ha_setDoor2PlayReps(float value)
+{
+     ha_door2PlayReps = value;
+     if (debug_g) { DPRINTF("HA=> "); ha_displayDoor2PlayReps(); }
+}
+//
+void ha_setDoorZPlayReps(float value)
+{
+     ha_doorZPlayReps = value;
+     if (debug_g) { DPRINTF("HA=> "); ha_displayDoorZPlayReps(); }
+}
+
+void ha_setDoorZButtonStatus(bool value)
+{
+     ha_doorZButtonStatus = value;
+     if (debug_g) { DPRINTF("HA=> "); ha_displayDoorZButtonStatus(); }  
 }
 
 //
@@ -456,10 +543,10 @@ void solenoidsStrike(unsigned mode)
 // When one of the buttons is pressed this function is called with the mode corresponding to the desired behavior 
 // for the given button. The sequence is played three times with a short pause between.
 //
-void solenoidsPlay(unsigned mode)
+void solenoidsPlay(unsigned mode, int reps)
 {    if (debug_g) 
          DPRINTF("solenoidsPlay %d\n", mode);
-     for(int i = 0; i < 3; i++) {
+     for(int i = 0; i < reps; i++) {
          solenoidsStrike(mode);
          delay(100);
      }
@@ -501,8 +588,14 @@ void setup() {
      //
      ha_door1ButtonStatus  = 0;    // if HA thinks door button 1 is pressed or not
      ha_door2ButtonStatus  = 0;    // if HA thinks door button 2 is pressed or not
+     ha_doorZButtonStatus  = 0;
      ha_door1PlayStatus    = 3;    // tone to play when button 1 is pressed
      ha_door2PlayStatus    = 2;    // tone to play when button 2 is pressed
+     ha_doorZPlayStatus    = 4;    // tone to play when zigbee button pressed by HA
+     ha_door1PlayReps      = 3;    // How many times to repeat tones
+     ha_door2PlayReps      = 3;
+     ha_doorZPlayReps      = 3;
+
      //
      // Watch dog timer on this task to panic if we don't get to main loop regulary.
      //
@@ -545,6 +638,42 @@ void setup() {
      zbDoor2Play.setAnalogOutputMinMax(0, 10);  
      zbDoor2Play.onAnalogOutputChange(ha_setDoor2PlayStatus);
      //
+     if (debug_g) DPRINTF("Door Z play\n");
+     zbDoorZPlay.setManufacturerAndModel(MFGR,MODL);
+     zbDoorZPlay.addAnalogOutput();
+     zbDoorZPlay.setAnalogOutputApplication(ESP_ZB_ZCL_AO_COUNT_UNITLESS_COUNT);
+     zbDoorZPlay.setAnalogOutputDescription("Tones (0=off)");
+     zbDoorZPlay.setAnalogOutputResolution(1);
+     zbDoorZPlay.setAnalogOutputMinMax(0, 10);  
+     zbDoorZPlay.onAnalogOutputChange(ha_setDoorZPlayStatus);
+     //
+     if (debug_g) DPRINTF("Door 1 reps\n");
+     zbDoor1PlayReps.setManufacturerAndModel(MFGR,MODL);
+     zbDoor1PlayReps.addAnalogOutput();
+     zbDoor1PlayReps.setAnalogOutputApplication(ESP_ZB_ZCL_AO_COUNT_UNITLESS_COUNT);
+     zbDoor1PlayReps.setAnalogOutputDescription("Repetitions");
+     zbDoor1PlayReps.setAnalogOutputResolution(1);
+     zbDoor1PlayReps.setAnalogOutputMinMax(0, 10);  
+     zbDoor1PlayReps.onAnalogOutputChange(ha_setDoor1PlayReps);
+     //
+     if (debug_g) DPRINTF("Door 2 reps\n");
+     zbDoor2PlayReps.setManufacturerAndModel(MFGR,MODL);
+     zbDoor2PlayReps.addAnalogOutput();
+     zbDoor2PlayReps.setAnalogOutputApplication(ESP_ZB_ZCL_AO_COUNT_UNITLESS_COUNT);
+     zbDoor2PlayReps.setAnalogOutputDescription("Repetitions");
+     zbDoor2PlayReps.setAnalogOutputResolution(1);
+     zbDoor2PlayReps.setAnalogOutputMinMax(0, 10);  
+     zbDoor2PlayReps.onAnalogOutputChange(ha_setDoor2PlayReps);
+     //
+     if (debug_g) DPRINTF("Door Z reps\n");
+     zbDoorZPlayReps.setManufacturerAndModel(MFGR,MODL);
+     zbDoorZPlayReps.addAnalogOutput();
+     zbDoorZPlayReps.setAnalogOutputApplication(ESP_ZB_ZCL_AO_COUNT_UNITLESS_COUNT);
+     zbDoorZPlayReps.setAnalogOutputDescription("Repetitions");
+     zbDoorZPlayReps.setAnalogOutputResolution(1);
+     zbDoorZPlayReps.setAnalogOutputMinMax(0, 10);  
+     zbDoorZPlayReps.onAnalogOutputChange(ha_setDoorZPlayReps);
+     //
      if (debug_g) DPRINTF("Door Button 1\n");
      zbDoor1Button.setManufacturerAndModel(MFGR,MODL);
      zbDoor1Button.addBinaryInput();
@@ -556,6 +685,16 @@ void setup() {
      zbDoor2Button.addBinaryInput();
      zbDoor2Button.setBinaryInputApplication(BINARY_INPUT_APPLICATION_TYPE_HVAC_UNIT_ENABLE);
      zbDoor2Button.setBinaryInputDescription("Door Button 2");
+     //
+     if (debug_g) DPRINTF("Door Button Z\n");
+     zbDoorZButton.setManufacturerAndModel(MFGR,MODL);
+     zbDoorZButton.addBinaryInput();
+     zbDoorZButton.setBinaryInputApplication(BINARY_INPUT_APPLICATION_TYPE_HVAC_OTHER);
+     zbDoorZButton.setBinaryInputDescription("Door Button Z");
+     zbDoorZButton.addBinaryOutput();
+     zbDoorZButton.setBinaryOutputApplication(BINARY_OUTPUT_APPLICATION_TYPE_HVAC_OTHER);
+     zbDoorZButton.setBinaryOutputDescription("Door Button Z");
+     zbDoorZButton.onBinaryOutputChange(ha_setDoorZButtonStatus);
      //
      if (debug_g) DPRINTF("RebootReason cluster\n");
      zbRebootReason.setManufacturerAndModel(MFGR,MODL);
@@ -591,8 +730,13 @@ void setup() {
      //
      Zigbee.addEndpoint(&zbDoor1Button);
      Zigbee.addEndpoint(&zbDoor2Button);
+     Zigbee.addEndpoint(&zbDoorZButton);
      Zigbee.addEndpoint(&zbDoor1Play);
      Zigbee.addEndpoint(&zbDoor2Play);
+     Zigbee.addEndpoint(&zbDoorZPlay);
+     Zigbee.addEndpoint(&zbDoor1PlayReps);
+     Zigbee.addEndpoint(&zbDoor2PlayReps);
+     Zigbee.addEndpoint(&zbDoorZPlayReps);
      Zigbee.addEndpoint(&zbRebootReason);
      Zigbee.addEndpoint(&zbLastUptime);
      Zigbee.addEndpoint(&zbRebootCount);
@@ -693,15 +837,19 @@ void loop()
      // Now do any actual work based on the button status.
      // 
      if (ha_door1ButtonStatus == true) {
-         solenoidsPlay(ha_door1PlayStatus);
+         solenoidsPlay(ha_door1PlayStatus, ha_door1PlayReps);
          isr_door1ButtonStatus = 0;       // Ignore any buttons pressed while we were playing tones.
      }
      //
      if (ha_door2ButtonStatus == true) {
-        solenoidsPlay(ha_door2PlayStatus);
+        solenoidsPlay(ha_door2PlayStatus, ha_door2PlayReps);
         isr_door2ButtonStatus = 0;        // Ignore any buttons pressed while we were playing tones.
      }
-     
+     //
+     if (ha_doorZButtonStatus == true) {
+        solenoidsPlay(ha_doorZPlayStatus, ha_doorZPlayReps);
+        // Will be cleared after its resynchronized with HA back to false.
+     }
      //
      // Every so often (5 mins) we update the HA, or if the status of one of the door bell button
      // changes we update that immediately.
@@ -713,14 +861,15 @@ void loop()
         static unsigned      lastDoor2ButtonStatus = false;
 
         bool status_change = (lastDoor1ButtonStatus != ha_door1ButtonStatus) ||
-                             (lastDoor2ButtonStatus != ha_door2ButtonStatus);
+                             (lastDoor2ButtonStatus != ha_door2ButtonStatus) || ha_doorZButtonStatus;
         //
         if (status_change || (last_update_time + MAX_TIME) <= now_time) {
-            if (debug_g) DPRINTF("loop - issue connected cluster update %ld %ld %d %d\n", 
-                                            last_update_time, now_time, ha_door1ButtonStatus, ha_door2ButtonStatus);
+            if (debug_g) DPRINTF("loop - issue connected cluster update %ld %ld D1 %d D2 %d Z %d\n", 
+                                            last_update_time, now_time, ha_door1ButtonStatus, ha_door2ButtonStatus, ha_doorZButtonStatus);
             last_update_time       = now_time;
             lastDoor1ButtonStatus  = ha_door1ButtonStatus;
             lastDoor2ButtonStatus  = ha_door2ButtonStatus;
+            ha_doorZButtonStatus   = false;                    // reset it to false after any action on the attribute.
             ha_sync_status();                 
         }
      }
