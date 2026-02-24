@@ -501,11 +501,12 @@ void ha_restart(uint32_t reason, uint32_t uptime)
 }
 
 //
-// Make the DING sound, just strike solenoid 1 briefly and return it.
+// Make the DING sound, just strike solenoid 1 briefly and return it. The duration to hold
+// the solenoid closed needs to be tuned to minimum. Otherwise the buzz unnecessarily.
 //
 void DING() {
      digitalWrite(solenoid1Pin, true);
-     delay(250);
+     delay(50);                            // how long to hold electromagnet
      digitalWrite(solenoid1Pin, false);
      delay(250);
 }
@@ -515,7 +516,7 @@ void DING() {
 //
 void DONG() {
      digitalWrite(solenoid2Pin, true);
-     delay(250);
+     delay(50);
      digitalWrite(solenoid2Pin, false);
      delay(250);
 }
