@@ -175,10 +175,10 @@ extern void rgb_led_set_factory_reset();
 void isr_resetButtonPress()
 {      
      int n = 1;
-     for(int i = 0; i < 10; i++) {
+     for(int i = 0; i < 50; i++) {
          n += (digitalRead(isr_resetButtonPin) == 0) ? 1 : 0;
      }
-     if (n < 7) return;                                 // if its too much like noise ignore it. 
+     if (n < 40) return;                                // if its too much like noise ignore it. 
      //
      rgb_led_set_factory_reset();                       // Go white so its obvious
      Zigbee.factoryReset(false);                        // This should do the same but not sure it does anyway ...
@@ -506,7 +506,7 @@ void ha_restart(uint32_t reason, uint32_t uptime)
 //
 void DING() {
      digitalWrite(solenoid1Pin, true);
-     delay(50);                            // how long to hold electromagnet
+     delay(100);                            // how long to hold electromagnet
      digitalWrite(solenoid1Pin, false);
      delay(250);
 }
@@ -516,7 +516,7 @@ void DING() {
 //
 void DONG() {
      digitalWrite(solenoid2Pin, true);
-     delay(50);
+     delay(100);
      digitalWrite(solenoid2Pin, false);
      delay(250);
 }
