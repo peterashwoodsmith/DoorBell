@@ -76,6 +76,7 @@ uint32_t          ha_nvs_last_reboot_count = 0;            // increase each rebo
 volatile uint32_t isr_door1ButtonStatus = 0;               // goes true when door bell one is pressed
 volatile uint32_t isr_door2ButtonStatus = 0;               // goes true when door bell two is pressed
 volatile bool     isr_no_zigbee = true;                    // true when no zigbee available (default bell behavior)            
+volatile bool     isr_ignore = false;                      // we set this to true while activing solenoids to minimize spurious
 
 //
 // We are looking for persistant values of the last reboot reason and last uptime. We store these two packed
@@ -172,8 +173,8 @@ extern void rgb_led_set_factory_reset();
 // We just look to see if we are getting a bunch of lows on the reset pin and if so we reset otherwise just ignore it as we can
 // get spurious interrupts when the solenoids activate.
 //
-void isr_resetButtonPress()
-{      
+void isr_resetButtonPress()      
+{    if (isr_ignore) return;                            // We ignore interrupts while playing solenoids
      int n = 1;
      for(int i = 0; i < 50; i++) {
          n += (digitalRead(isr_resetButtonPin) == 0) ? 1 : 0;
@@ -191,33 +192,35 @@ void isr_resetButtonPress()
 // a press so we look ahead a bit in time to make sure its staying low.
 //
 void isr_door1ButtonPress()
-{    unsigned int pressed = (digitalRead(isr_door1ButtonPin) == 0) ? 1 : 0;
+{    if (isr_ignore) return;
+     unsigned int pressed = (digitalRead(isr_door1ButtonPin) == 0) ? 1 : 0;
      if (isr_no_zigbee) {
          digitalWrite(solenoid1Pin, pressed);
          return;
      } 
      if (pressed) { 
          int n = 1;
-         for(int i = 0; i < 10; i++) {
+         for(int i = 0; i < 50; i++) {
              n += (digitalRead(isr_door1ButtonPin) == 0) ? 1 : 0;
          }
-         if (n < 7) return;
+         if (n < 40) return;
          isr_door1ButtonStatus += 1;   
      }    
 }
 //
 void isr_door2ButtonPress()
-{    unsigned int pressed = (digitalRead(isr_door2ButtonPin) == 0) ? 1 : 0;
+{    if (isr_ignore) return;
+     unsigned int pressed = (digitalRead(isr_door2ButtonPin) == 0) ? 1 : 0;
      if (isr_no_zigbee) {
          digitalWrite(solenoid2Pin, pressed);    
          return;
      } 
      if (pressed) { 
          int n = 1;
-         for(int i = 0; i < 10; i++) {
+         for(int i = 0; i < 50; i++) {
              n += (digitalRead(isr_door2ButtonPin) == 0) ? 1 : 0;
          }
-         if (n < 7) return;
+         if (n < 40) return;
          isr_door2ButtonStatus += 1;   
      }            
 }
@@ -244,6 +247,7 @@ void hw_setup()
      isr_door1ButtonStatus = 0;
      isr_door2ButtonStatus = 0;
      isr_no_zigbee = true;
+     isr_ignore = false;
 }
 
 //
@@ -542,25 +546,30 @@ void solenoidsStrike(unsigned mode)
 
 //
 // When one of the buttons is pressed this function is called with the mode corresponding to the desired behavior 
-// for the given button. The sequence is played three times with a short pause between.
+// for the given button. The sequence is played three times with a short pause between. While playing the solenoids 
+// we ignore any incomming interrupts as we sometimes get spurious noise. Easier to do this than to filter it out
+// at the hardware level for now.
 //
 void solenoidsPlay(unsigned mode, int reps)
 {    if (debug_g) 
          DPRINTF("solenoidsPlay %d\n", mode);
+     isr_ignore = true;
      for(int i = 0; i < reps; i++) {
          solenoidsStrike(mode);
          delay(100);
      }
+     isr_ignore = false;
 }
 
 //
-// Force All solenoids off
+// Force All solenoids off. We ignore any interrupts while doing this in case one of them switches off and makes some noise.
+// They should be off anyway.
 //
 void solenoids_reset()
-{    if (debug_g) 
-         DPRINTF("solenoidsReset\n");
+{    isr_ignore = true;
      digitalWrite(solenoid1Pin, false); 
      digitalWrite(solenoid2Pin, false);
+     isr_ignore = false;
 }
 
 // 
@@ -572,6 +581,7 @@ void setup() {
      // Until we have zibgee connection the button interrupts do normal door bell operation.
      //
      isr_no_zigbee = true;
+     isr_ignore = false;
 
      //
      // Debug stuff
@@ -800,6 +810,7 @@ void setup() {
      // once we have zigbee its handled in the main loop.
      //
      isr_no_zigbee = false;
+     isr_ignore = false;
 }
 
 //
