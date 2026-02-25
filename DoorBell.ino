@@ -305,7 +305,9 @@ void ha_sync_status()
      zbDoorZPlayReps.setAnalogOutput(ha_doorZPlayReps);
 
      zbDoor1Button.setBinaryInput(ha_door1ButtonStatus);
+     zbDoor1Button.setBinaryOutput(ha_door1ButtonStatus);
      zbDoor2Button.setBinaryInput(ha_door2ButtonStatus);
+     zbDoor2Button.setBinaryOutput(ha_door2ButtonStatus);
 
      zbDoorZButton.setBinaryOutput(ha_doorZButtonStatus);    // HA can press this button to cause sound but
      zbDoorZButton.setBinaryInput(ha_doorZButtonStatus);     // we reset it after we've finished playing.
@@ -324,7 +326,9 @@ void ha_sync_status()
      zbDoorZPlayReps.reportAnalogOutput();
      
      zbDoor1Button.reportBinaryInput();
+     zbDoor1Button.reportBinaryOutput();
      zbDoor2Button.reportBinaryInput();
+     zbDoor2Button.reportBinaryOutput();
      zbDoorZButton.reportBinaryInput();
      zbDoorZButton.reportBinaryOutput();
 
@@ -337,6 +341,14 @@ void ha_sync_status()
 //
 // These are just useful debugging functions to display the attributes that HA has given us.
 // One for each attributes.
+// 
+void ha_displayDoor1ButtonStatus()
+{    DPRINTF("Door1ButtonStatus   = %d\n", ha_door1ButtonStatus);
+}
+// 
+void ha_displayDoor2ButtonStatus()
+{    DPRINTF("Door2ButtonStatus   = %d\n", ha_door2ButtonStatus);
+}
 // 
 void ha_displayDoorZButtonStatus()
 {    DPRINTF("DoorZButtonStatus   = %d\n", ha_doorZButtonStatus);
@@ -413,7 +425,19 @@ void ha_setDoorZPlayReps(float value)
      ha_doorZPlayReps = value;
      if (debug_g) { DPRINTF("HA=> "); ha_displayDoorZPlayReps(); }
 }
-
+//
+void ha_setDoor1ButtonStatus(bool value)
+{
+     ha_door1ButtonStatus = value;
+     if (debug_g) { DPRINTF("HA=> "); ha_displayDoor1ButtonStatus(); }  
+}
+//
+void ha_setDoor2ButtonStatus(bool value)
+{
+     ha_door2ButtonStatus = value;
+     if (debug_g) { DPRINTF("HA=> "); ha_displayDoor2ButtonStatus(); }  
+}
+//
 void ha_setDoorZButtonStatus(bool value)
 {
      ha_doorZButtonStatus = value;
@@ -688,23 +712,31 @@ void setup() {
      if (debug_g) DPRINTF("Door Button 1\n");
      zbDoor1Button.setManufacturerAndModel(MFGR,MODL);
      zbDoor1Button.addBinaryInput();
-     zbDoor1Button.setBinaryInputApplication(BINARY_INPUT_APPLICATION_TYPE_HVAC_UNIT_ENABLE);
+     zbDoor1Button.setBinaryInputApplication(BINARY_INPUT_APPLICATION_TYPE_HVAC_OTHER);
      zbDoor1Button.setBinaryInputDescription("Button1");
+     zbDoor1Button.addBinaryOutput();
+     zbDoor1Button.setBinaryOutputApplication(BINARY_OUTPUT_APPLICATION_TYPE_HVAC_OTHER);
+     zbDoor1Button.setBinaryOutputDescription("Play1");
+     zbDoor1Button.onBinaryOutputChange(ha_setDoor1ButtonStatus);
      //
      if (debug_g) DPRINTF("Door Button 2\n");
      zbDoor2Button.setManufacturerAndModel(MFGR,MODL);
      zbDoor2Button.addBinaryInput();
-     zbDoor2Button.setBinaryInputApplication(BINARY_INPUT_APPLICATION_TYPE_HVAC_UNIT_ENABLE);
+     zbDoor2Button.setBinaryInputApplication(BINARY_INPUT_APPLICATION_TYPE_HVAC_OTHER);
      zbDoor2Button.setBinaryInputDescription("Button2");
+     zbDoor2Button.addBinaryOutput();
+     zbDoor2Button.setBinaryOutputApplication(BINARY_OUTPUT_APPLICATION_TYPE_HVAC_OTHER);
+     zbDoor2Button.setBinaryOutputDescription("Play2");
+     zbDoor2Button.onBinaryOutputChange(ha_setDoor2ButtonStatus);
      //
      if (debug_g) DPRINTF("Door Button Z\n");
      zbDoorZButton.setManufacturerAndModel(MFGR,MODL);
      zbDoorZButton.addBinaryInput();
      zbDoorZButton.setBinaryInputApplication(BINARY_INPUT_APPLICATION_TYPE_HVAC_OTHER);
-     zbDoorZButton.setBinaryInputDescription("PlayZ");
+     zbDoorZButton.setBinaryInputDescription("ButtonZ");
      zbDoorZButton.addBinaryOutput();
      zbDoorZButton.setBinaryOutputApplication(BINARY_OUTPUT_APPLICATION_TYPE_HVAC_OTHER);
-     zbDoorZButton.setBinaryOutputDescription("ButtonZ");
+     zbDoorZButton.setBinaryOutputDescription("PlayZ");
      zbDoorZButton.onBinaryOutputChange(ha_setDoorZButtonStatus);
      //
      if (debug_g) DPRINTF("RebootReason cluster\n");
@@ -837,10 +869,11 @@ void loop()
 
      //
      // Check to see if either door bell is pressed. We can check the status later for changes.
+     // Must or with existing status because it may have been changed by HA.
      //       
-     ha_door1ButtonStatus = isr_door1ButtonStatus > 0;
-     ha_door2ButtonStatus = isr_door2ButtonStatus > 0;
-
+     ha_door1ButtonStatus |= isr_door1ButtonStatus > 0;
+     ha_door2ButtonStatus |= isr_door2ButtonStatus > 0;
+     //
      if (debug_g && (isr_door1ButtonStatus + isr_door2ButtonStatus) > 0) {
          DPRINTF("loop() Door1=%d Door2=%d\n", isr_door1ButtonStatus, isr_door2ButtonStatus);
      }
@@ -849,13 +882,17 @@ void loop()
      // Now do any actual work based on the button status.
      // 
      if (ha_door1ButtonStatus == true) {
+         zbDoor1Button.setBinaryInput(true);     // report sensor back to HA that we are playing it now.
+         zbDoor1Button.reportBinaryInput();
          solenoidsPlay(ha_door1PlayStatus, ha_door1PlayReps);
-         isr_door1ButtonStatus = 0;       // Ignore any buttons pressed while we were playing tones.
+         isr_door1ButtonStatus = 0;              // Ignore any buttons pressed while we were playing tones.
      }
      //
      if (ha_door2ButtonStatus == true) {
+         zbDoor2Button.setBinaryInput(true);     // report sensor back to HA that we are playing it now.
+         zbDoor2Button.reportBinaryInput();
          solenoidsPlay(ha_door2PlayStatus, ha_door2PlayReps);
-         isr_door2ButtonStatus = 0;        // Ignore any buttons pressed while we were playing tones.
+         isr_door2ButtonStatus = 0;              // Ignore any buttons pressed while we were playing tones.
      }
      //
      if (ha_doorZButtonStatus == true) {
@@ -882,6 +919,8 @@ void loop()
             last_update_time       = now_time;
             lastDoor1ButtonStatus  = ha_door1ButtonStatus;
             lastDoor2ButtonStatus  = ha_door2ButtonStatus;
+            ha_door1ButtonStatus   = false;                    // reset it to false after any action on the attribute.
+            ha_door2ButtonStatus   = false;                    // reset it to false after any action on the attribute.
             ha_doorZButtonStatus   = false;                    // reset it to false after any action on the attribute.
             ha_sync_status();                 
         }
