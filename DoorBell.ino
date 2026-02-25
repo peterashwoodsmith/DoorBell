@@ -890,10 +890,10 @@ void loop()
      //
      // Led is off for 4 seconds, then 1 second on Green .. etc. to indicate zibgee is up and ok.
      //
-     rgb_led_set(ix != 0 ? RGB_LED_OFF : status_color);
-     ix = (ix + 1) % 5;
+     rgb_led_set(ix > 1 ? RGB_LED_OFF : status_color);
+     ix = (ix + 1) % 10;
      //
      // No need to buzz this loop, little pause is fine.
      //
-     delay(1000);
+     delay(500);
 }
