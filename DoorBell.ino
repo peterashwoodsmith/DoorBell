@@ -1,13 +1,19 @@
 //
-// This ESP32 ARDUINO program is a Zibgee end device that will interact with a mechanical door bell. It allows the door bell
-// button presses to become Zibgee binary sensors and allows playing ot the bells via relays using inputs from zigbee.
-// It uses the 12v AC power of the normal door bell.
+// This ESP32 ARDUINO program is a Zibgee end device that will interact with a solenoid chime door bell. It allows the door bell
+// button presses to become Zibgee binary sensors and allows playing of the bells via relays using inputs from zigbee.
+// It uses the 12v-24v AC power of the normal door bell.
 //
 // HARDWARE:
 //
 // On an ESP32-C6 we have a factory reset button, inputs for two door bell buttons, and outputs for two relays which drive the
-// door bell chimes. So you need a 12-14AC to 5v DC converter to drive it. The AC is controlled by the relays but everything else
-// operates at 5 volts.
+// door bell chimes. So you need a 12-24AC to 5v DC converter to drive it. The output of the AC to DC converter powers the 5V
+// input and ground of the Esp board. The raw AC is however is fed into to one side of the bell solenoids while the other 
+// side is switched by the normally open side of the switches. The switches are driven by the 3.3v output pins from the ESP32.
+// As a result the ESP32 can detect when door bells buttons are pressed and can also trigger the bells in any patter in wants by
+// simply setting the proper output pins that drive the switches. The exact timeing and sequence of course depends on the physical
+// characterastics of the solenoids and experimentation is required to get the proper duraction of the 'true' output to get a good
+// hard strike without undue buzzing.
+//
 // BUILD NOTES:
 //          I built this on a Mac and had problems with the USB driver. Waveshare has a nice page describing how to put a new
 //          driver on your Mac which worked perfectly. Without it one of my boards refused to load the code via Arduino but 
@@ -26,6 +32,33 @@
 //              4 - Tools/zibgee mode ED (end device) - you can also use the end mode with debug enabled for more tracing.
 //
 // SOFTWARE:
+//
+// The software has three interrupt handlers. The first handles the factory reset button which erases all the zibbee data so
+// that rebinding is required. The second and third handlers will fire when one of the door bell buttons is pressed. 
+// These handlers are a bit special because if the zigee connection is not up we don't want to ignore a door bell press so we
+// simply pass the state of the button through to the switch. This in insures that if zibgee goes down or does not connect the
+// door bells function with a single strike per button press each. 
+//
+// The setup() function of course configures zigbee clusters and sets all the attributes correctly then attaches to the 
+// zigbee network. Once the network is up we enter the main loop().
+//
+// The main loop listens either for signs of button presses by the interrupt handlers, or from the HA binary switches. In 
+// Either case it looks up the proper tones and repetitions and ask the relays to play that pattern. After they are finished
+// it resets all the zibgee attributes. As a result zibgee will show when an external button is pressed so that can be used as
+// a trigger for other things, and it also allows playing from zibgee. In addition two the two manual buttons I also provide a
+// Z button which only can be triggered by Zibgee. This allows automations/notifications etc. to set a tone, repetition and 
+// then request it be played. 
+//
+// There is a watch dog timers that is fed in the main loop and a simple blue flashing led when trying to bind to zibeee and
+// a green flashing led when its fully bound.
+//
+// Since the solenoids/mechanical buttons can be quite noisy we need do quite a bit of debouncing. A few tricks are employed 
+// here. First we look for enough '1's so we read a bit of the signal to ensure its steady enough to warrant an event.
+// Next we completely ignore the interrupts if the solenoids are busy. Some external hardware would be useful here with some
+// capacitors/diods and perhaps Schmidt triggers but this is simpler albeit a bit ugly.
+//
+// For debugging purposes we store a number of attributes in non volatile store (such as reboot reasons etc) and display them
+// as clusters for debugging.
 //
 #include <esp_task_wdt.h>
 #include <nvs_flash.h>
@@ -60,7 +93,7 @@ static const char *TAG = "zDoor";
 // in the Arduino menu for use with the debug enabled library and debug levels in that core. We can also compile in/out 
 // the watch dog timers. 
 //
-const bool debug_g = true;
+const bool debug_g = false;
 const bool wdt_g   = true;
 
 // 
@@ -76,7 +109,7 @@ uint32_t          ha_nvs_last_reboot_count = 0;            // increase each rebo
 volatile uint32_t isr_door1ButtonStatus = 0;               // goes true when door bell one is pressed
 volatile uint32_t isr_door2ButtonStatus = 0;               // goes true when door bell two is pressed
 volatile bool     isr_no_zigbee = true;                    // true when no zigbee available (default bell behavior)            
-volatile bool     isr_ignore = false;                      // we set this to true while activing solenoids to minimize spurious
+volatile bool     isr_ignore = true;                       // we set this to true while activing solenoids to minimize spurious
 
 //
 // We are looking for persistant values of the last reboot reason and last uptime. We store these two packed
@@ -247,7 +280,7 @@ void hw_setup()
      isr_door1ButtonStatus = 0;
      isr_door2ButtonStatus = 0;
      isr_no_zigbee = true;
-     isr_ignore = false;
+     isr_ignore = true;
 }
 
 //
@@ -281,8 +314,9 @@ ZigbeeAnalog      zbDoorZPlayReps = ZigbeeAnalog(22);
 // These are the variables that maintain the state of what HA has asked to be set
 // set.
 //
-unsigned int ha_door1ButtonStatus   = 0;    // if HA thinks door button 1 is pressed or not
-unsigned int ha_door2ButtonStatus   = 0;    // if HA thinks door button 2 is pressed or not
+volatile unsigned int ha_door1ButtonStatus   = 0;    // if HA thinks door button 1 is pressed or not (can be set by another task)
+volatile unsigned int ha_door2ButtonStatus   = 0;    // if HA thinks door button 2 is pressed or not (can be set by another task)
+//
 unsigned int ha_doorZButtonStatus   = 0;    // if HA presses this button we play
 unsigned int ha_door1PlayStatus     = 3;    // tone to play when button 1 is pressed Ding Dong Ding Dong Ding Dong
 unsigned int ha_door2PlayStatus     = 2;    // tone to play when button 2 is pressed Dong Dong Dong Dong Dong Dong
@@ -549,6 +583,15 @@ void DONG() {
      delay(250);
 }
 
+void ALARMDING()
+{    for(int i = 0; i < 20; i++) {
+        digitalWrite(solenoid1Pin, true);
+        delay(100);
+        digitalWrite(solenoid1Pin, false);
+        delay(75);
+     }
+}
+
 //
 // Strike the solenoids according to the mode pattern
 //
@@ -563,7 +606,7 @@ void solenoidsStrike(unsigned mode)
           case 7: DONG(); DING(); DONG();      break;
           case 8: DING(); DONG(); DING();      break;
           case 9: DONG(); DONG(); DONG();      break;
-          case 10:DING(); DING(); DING();      break;
+          case 10:ALARMDING();                 break;
           default:                             break;
      }
 }
@@ -605,7 +648,7 @@ void setup() {
      // Until we have zibgee connection the button interrupts do normal door bell operation.
      //
      isr_no_zigbee = true;
-     isr_ignore = false;
+     isr_ignore = true;
 
      //
      // Debug stuff
@@ -803,13 +846,17 @@ void setup() {
      //
      // When all EPs are registered, start Zigbee in End Device mode
      //
+     isr_ignore = false; // allow factory reset from this point on.
+     //
      if (!Zigbee.begin(&zigbeeConfig, false)) { 
         if (debug_g) {
             DPRINTF("Zigbee failed to start!\n");
             DPRINTF("Rebooting ESP32!\n");
         }
-        rgb_led_flash(RGB_LED_RED, RGB_LED_RED);  // Sometimes it stays orange
-        rgb_led_flash(RGB_LED_RED, RGB_LED_RED);
+        for(int i = 0; i < 10; i++) {
+           rgb_led_flash(RGB_LED_RED, RGB_LED_WHITE);
+           rgb_led_flash(RGB_LED_WHITE, RGB_LED_RED);
+        }
         ha_restart(3, millis()/1000);             // restart and remember why
      }
      //
@@ -842,7 +889,6 @@ void setup() {
      // once we have zigbee its handled in the main loop.
      //
      isr_no_zigbee = false;
-     isr_ignore = false;
 }
 
 //
@@ -860,13 +906,12 @@ void loop()
          if (debug_g) DPRINTF("zigbee disconnected while in loop()- restarting\n");
          ha_restart(5, millis()/1000);   
      }
-  
+     //
      int status_color = RGB_LED_GREEN;
      //
      // And feed the watch dog because all is well, zigbee ok and serial comms ok.
      // 
      if (wdt_g) esp_task_wdt_reset();  
-
      //
      // Check to see if either door bell is pressed. We can check the status later for changes.
      // Must or with existing status because it may have been changed by HA.
@@ -877,55 +922,58 @@ void loop()
      if (debug_g && (isr_door1ButtonStatus + isr_door2ButtonStatus) > 0) {
          DPRINTF("loop() Door1=%d Door2=%d\n", isr_door1ButtonStatus, isr_door2ButtonStatus);
      }
-
      //
-     // Now do any actual work based on the button status.
+     // Now do any actual work based on the button status. We set the sensor output to true to indicate pressed status.
+     // Then play the solenoids, then reset the triggers that caused it (interrupts or HA setting the binary status). 
+     // Then update HA input/output to reflect we are all done. This toggles the activiation switch on HA back off.
+     // Its basically the same for all triggers except the Z button which has no interrupt source locally.
      // 
      if (ha_door1ButtonStatus == true) {
-         zbDoor1Button.setBinaryInput(true);     // report sensor back to HA that we are playing it now.
+         zbDoor1Button.setBinaryInput(true);      // report sensor back to HA that we are playing it now.
          zbDoor1Button.reportBinaryInput();
          solenoidsPlay(ha_door1PlayStatus, ha_door1PlayReps);
-         isr_door1ButtonStatus = 0;              // Ignore any buttons pressed while we were playing tones.
+         isr_door1ButtonStatus = 0;               // Ignore any buttons pressed while we were playing tones.
+         ha_door1ButtonStatus = false;
+         zbDoor1Button.setBinaryInput(false);     // report sensor back to HA that we are playing it now.
+         zbDoor1Button.reportBinaryInput();
+         zbDoor1Button.setBinaryOutput(false);
+         zbDoor1Button.reportBinaryOutput();
      }
      //
      if (ha_door2ButtonStatus == true) {
-         zbDoor2Button.setBinaryInput(true);     // report sensor back to HA that we are playing it now.
+         zbDoor2Button.setBinaryInput(true);      
          zbDoor2Button.reportBinaryInput();
          solenoidsPlay(ha_door2PlayStatus, ha_door2PlayReps);
-         isr_door2ButtonStatus = 0;              // Ignore any buttons pressed while we were playing tones.
+         isr_door2ButtonStatus = 0;                
+         ha_door2ButtonStatus = false;
+         zbDoor2Button.setBinaryInput(false);      
+         zbDoor2Button.reportBinaryInput();
+         zbDoor2Button.setBinaryOutput(false);
+         zbDoor2Button.reportBinaryOutput();
      }
      //
      if (ha_doorZButtonStatus == true) {
-         zbDoorZButton.setBinaryInput(ha_doorZButtonStatus);     // report sensor back to HA that we are playing it now.
+         zbDoorZButton.setBinaryInput(true);       
          zbDoorZButton.reportBinaryInput();
          solenoidsPlay(ha_doorZPlayStatus, ha_doorZPlayReps);
+         ha_doorZButtonStatus = false;
+         zbDoorZButton.setBinaryInput(false);      
+         zbDoorZButton.reportBinaryInput();
+         zbDoorZButton.setBinaryOutput(false);
+         zbDoorZButton.reportBinaryOutput();
      }
      //
-     // Every so often (5 mins) we update the HA, or if the status of one of the door bell button
-     // changes we update that immediately.
+     // Every so often (5 mins) we update the HA with all all attributes.
      //
      {  const unsigned long  MAX_TIME              = 60*5;
         static unsigned long last_update_time      = 0;
         unsigned long        now_time              = millis() / 1000;
-        static unsigned      lastDoor1ButtonStatus = false;
-        static unsigned      lastDoor2ButtonStatus = false;
-
-        bool status_change = (lastDoor1ButtonStatus != ha_door1ButtonStatus) ||
-                             (lastDoor2ButtonStatus != ha_door2ButtonStatus) || ha_doorZButtonStatus;
         //
-        if (status_change || (last_update_time + MAX_TIME) <= now_time) {
-            if (debug_g) DPRINTF("loop - issue connected cluster update %ld %ld D1 %d D2 %d Z %d\n", 
-                                            last_update_time, now_time, ha_door1ButtonStatus, ha_door2ButtonStatus, ha_doorZButtonStatus);
-            last_update_time       = now_time;
-            lastDoor1ButtonStatus  = ha_door1ButtonStatus;
-            lastDoor2ButtonStatus  = ha_door2ButtonStatus;
-            ha_door1ButtonStatus   = false;                    // reset it to false after any action on the attribute.
-            ha_door2ButtonStatus   = false;                    // reset it to false after any action on the attribute.
-            ha_doorZButtonStatus   = false;                    // reset it to false after any action on the attribute.
+        if ((last_update_time + MAX_TIME) <= now_time) {
+            last_update_time = now_time;
             ha_sync_status();                 
         }
      }
-
      //
      // Led is off for 4 seconds, then 1 second on Green .. etc. to indicate zibgee is up and ok.
      //
