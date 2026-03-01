@@ -1,0 +1,57 @@
+views:
+  - type: sections
+    sections:
+      - type: grid
+        cards:
+          - type: heading
+            heading: Button 1
+          - type: tile
+            entity: binary_sensor.zriverview_zzdoor_door_button_1
+            name: Playing
+          - type: tile
+            entity: number.zriverview_zzdoor_repetitions
+            name: Repetitions
+          - type: tile
+            entity: number.zriverview_zzdoor_tones_0_off
+            name: Tones
+          - type: tile
+            entity: switch.zriverview_zzdoor_play1
+            name: Play Now
+            column_span: 4
+      - type: grid
+        cards:
+          - type: heading
+            heading: Button 2
+          - type: tile
+            entity: binary_sensor.zriverview_zzdoor_door_button_2
+            name: Playing
+          - type: tile
+            entity: number.zriverview_zzdoor_repetitions_2
+            name: Repetitions
+          - type: tile
+            entity: number.zriverview_zzdoor_tones_0_off_2
+            name: Tones
+          - type: tile
+            entity: switch.zriverview_zzdoor_play2
+            name: Play Now
+            column_span: 4
+      - type: grid
+        cards:
+          - type: heading
+            heading: Button Z
+          - type: tile
+            entity: binary_sensor.zriverview_zzdoor_door_button_z
+            name: Playing
+          - type: tile
+            entity: number.zriverview_zzdoor_repetitions_3
+            name: Repetitions
+          - type: tile
+            entity: number.zriverview_zzdoor_tones_0_off_3
+            name: Tones
+          - type: tile
+            entity: switch.zriverview_zzdoor
+            name: Play Now
+        column_span: 4
+    max_columns: 4
+    title: Door Bells
+    cards: []
