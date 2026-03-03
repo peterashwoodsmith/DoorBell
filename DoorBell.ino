@@ -588,7 +588,29 @@ void ALARMDING()
         digitalWrite(solenoid1Pin, true);
         delay(100);
         digitalWrite(solenoid1Pin, false);
-        delay(75);
+        delay(200);
+     }
+}
+
+void ALARMDONG()
+{    for(int i = 0; i < 20; i++) {
+        digitalWrite(solenoid2Pin, true);
+        delay(100);
+        digitalWrite(solenoid2Pin, false);
+        delay(200);
+     }
+}
+
+void ALARMDINGDONG()
+{    for(int i = 0; i < 10; i++) {
+        digitalWrite(solenoid1Pin, true);
+        delay(50);
+        digitalWrite(solenoid2Pin, true);
+        delay(50);
+        digitalWrite(solenoid1Pin, false);
+        delay(50);
+        digitalWrite(solenoid2Pin, false);
+        delay(200);
      }
 }
 
@@ -597,16 +619,23 @@ void ALARMDING()
 //
 void solenoidsStrike(unsigned mode)
 {    switch(mode) {
-          case 1: DING(); DING();              break;
-          case 2: DONG(); DONG();              break;
-          case 3: DING(); DONG();              break;
-          case 4: DONG(); DING();              break;
-          case 5: DING(); DING(); DONG();      break;
-          case 6: DONG(); DONG(); DING();      break;
-          case 7: DONG(); DING(); DONG();      break;
+          case 0: DING();                      break;
+          case 1: DONG();                      break;
+          case 2: DING(); DING();              break;
+          case 3: DONG(); DONG();              break;
+          case 4: DING(); DONG();              break;
+          case 5: DONG(); DING();              break;
+          case 6: DING(); DING(); DING();      break;
+          case 7: DING(); DING(); DONG();      break;
           case 8: DING(); DONG(); DING();      break;
-          case 9: DONG(); DONG(); DONG();      break;
-          case 10:ALARMDING();                 break;
+          case 9: DING(); DONG(); DONG();      break;
+          case 10:DONG(); DING(); DING();      break;
+          case 11:DONG(); DING(); DONG();      break;
+          case 12:DONG(); DONG(); DING();      break;
+          case 13:DONG(); DONG(); DONG();      break;
+          case 14:ALARMDING();                 break;
+          case 15:ALARMDONG();                 break;
+          case 16:ALARMDINGDONG();             break;
           default:                             break;
      }
 }
@@ -667,12 +696,12 @@ void setup() {
      ha_door1ButtonStatus  = 0;    // if HA thinks door button 1 is pressed or not
      ha_door2ButtonStatus  = 0;    // if HA thinks door button 2 is pressed or not
      ha_doorZButtonStatus  = 0;
-     ha_door1PlayStatus    = 3;    // tone to play when button 1 is pressed
-     ha_door2PlayStatus    = 2;    // tone to play when button 2 is pressed
-     ha_doorZPlayStatus    = 4;    // tone to play when zigbee button pressed by HA
-     ha_door1PlayReps      = 3;    // How many times to repeat tones
-     ha_door2PlayReps      = 3;
-     ha_doorZPlayReps      = 3;
+     ha_door1PlayStatus    = 4;    // tone to play when button 1 is pressed DING DONG
+     ha_door2PlayStatus    = 3;    // tone to play when button 2 is pressed DONG DONG
+     ha_doorZPlayStatus    = 14;   // tone to play when zigbee button pressed by HA DING....DING
+     ha_door1PlayReps      = 1;    // How many times to repeat tones
+     ha_door2PlayReps      = 1;
+     ha_doorZPlayReps      = 2;
 
      //
      // Watch dog timer on this task to panic if we don't get to main loop regulary.
@@ -695,34 +724,34 @@ void setup() {
      //
      // Add the zibgee clusters (buttons/sliders etc.)
      //
-     const char *MFGR = "zRiverView";    // Because my home office looks out over the ottwawa river ;)
-     const char *MODL = "zzDoor";        // Door bell interface
+     const char *MFGR = "RiverView";    // Because my home office looks out over the ottwawa river ;)
+     const char *MODL = "zDoor";        // Door bell interface
      //
      if (debug_g) DPRINTF("Door 1 play\n");
      zbDoor1Play.setManufacturerAndModel(MFGR,MODL);
      zbDoor1Play.addAnalogOutput();
      zbDoor1Play.setAnalogOutputApplication(ESP_ZB_ZCL_AO_COUNT_UNITLESS_COUNT);
-     zbDoor1Play.setAnalogOutputDescription("Tones1 (0=off)");
+     zbDoor1Play.setAnalogOutputDescription("Tones1");
      zbDoor1Play.setAnalogOutputResolution(1);
-     zbDoor1Play.setAnalogOutputMinMax(0, 10);  
+     zbDoor1Play.setAnalogOutputMinMax(0, 16);  
      zbDoor1Play.onAnalogOutputChange(ha_setDoor1PlayStatus);
      //
      if (debug_g) DPRINTF("Door 2 play\n");
      zbDoor2Play.setManufacturerAndModel(MFGR,MODL);
      zbDoor2Play.addAnalogOutput();
      zbDoor2Play.setAnalogOutputApplication(ESP_ZB_ZCL_AO_COUNT_UNITLESS_COUNT);
-     zbDoor2Play.setAnalogOutputDescription("Tones2 (0=off)");
+     zbDoor2Play.setAnalogOutputDescription("Tones2");
      zbDoor2Play.setAnalogOutputResolution(1);
-     zbDoor2Play.setAnalogOutputMinMax(0, 10);  
+     zbDoor2Play.setAnalogOutputMinMax(0, 16);  
      zbDoor2Play.onAnalogOutputChange(ha_setDoor2PlayStatus);
      //
      if (debug_g) DPRINTF("Door Z play\n");
      zbDoorZPlay.setManufacturerAndModel(MFGR,MODL);
      zbDoorZPlay.addAnalogOutput();
      zbDoorZPlay.setAnalogOutputApplication(ESP_ZB_ZCL_AO_COUNT_UNITLESS_COUNT);
-     zbDoorZPlay.setAnalogOutputDescription("TonesZ (0=off)");
+     zbDoorZPlay.setAnalogOutputDescription("TonesZ");
      zbDoorZPlay.setAnalogOutputResolution(1);
-     zbDoorZPlay.setAnalogOutputMinMax(0, 10);  
+     zbDoorZPlay.setAnalogOutputMinMax(0, 16);  
      zbDoorZPlay.onAnalogOutputChange(ha_setDoorZPlayStatus);
      //
      if (debug_g) DPRINTF("Door 1 reps\n");
@@ -731,7 +760,7 @@ void setup() {
      zbDoor1PlayReps.setAnalogOutputApplication(ESP_ZB_ZCL_AO_COUNT_UNITLESS_COUNT);
      zbDoor1PlayReps.setAnalogOutputDescription("Repetitions1");
      zbDoor1PlayReps.setAnalogOutputResolution(1);
-     zbDoor1PlayReps.setAnalogOutputMinMax(0, 10);  
+     zbDoor1PlayReps.setAnalogOutputMinMax(0, 20);  
      zbDoor1PlayReps.onAnalogOutputChange(ha_setDoor1PlayReps);
      //
      if (debug_g) DPRINTF("Door 2 reps\n");
@@ -740,7 +769,7 @@ void setup() {
      zbDoor2PlayReps.setAnalogOutputApplication(ESP_ZB_ZCL_AO_COUNT_UNITLESS_COUNT);
      zbDoor2PlayReps.setAnalogOutputDescription("Repetitions2");
      zbDoor2PlayReps.setAnalogOutputResolution(1);
-     zbDoor2PlayReps.setAnalogOutputMinMax(0, 10);  
+     zbDoor2PlayReps.setAnalogOutputMinMax(0, 20);  
      zbDoor2PlayReps.onAnalogOutputChange(ha_setDoor2PlayReps);
      //
      if (debug_g) DPRINTF("Door Z reps\n");
@@ -749,7 +778,7 @@ void setup() {
      zbDoorZPlayReps.setAnalogOutputApplication(ESP_ZB_ZCL_AO_COUNT_UNITLESS_COUNT);
      zbDoorZPlayReps.setAnalogOutputDescription("RepetitionsZ");
      zbDoorZPlayReps.setAnalogOutputResolution(1);
-     zbDoorZPlayReps.setAnalogOutputMinMax(0, 10);  
+     zbDoorZPlayReps.setAnalogOutputMinMax(0, 20);  
      zbDoorZPlayReps.onAnalogOutputChange(ha_setDoorZPlayReps);
      //
      if (debug_g) DPRINTF("Door Button 1\n");
